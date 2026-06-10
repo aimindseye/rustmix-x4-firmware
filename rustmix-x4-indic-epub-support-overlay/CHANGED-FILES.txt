@@ -1,0 +1,12 @@
+ARCHITECTURE.md
+README.md
+USERGUIDE.md
+target-xteink-x4/src/rustmix_x4/x4_apps/apps/reader/mod.rs
+target-xteink-x4/src/rustmix_x4/x4_apps/apps/reader/paging.rs
+target-xteink-x4/src/rustmix_x4/x4_apps/apps/reader/prepared_txt.rs
+tools/font_prepare/README.md
+tools/font_prepare/prepare_book.py
+tools/prepared_epub_smoke/README.md
+tools/prepared_epub_smoke/prepare_epub.py
+tools/prepared_txt_real_vfnt/src/main.rs
+scripts/validate_prepared_indic_epub_support.sh

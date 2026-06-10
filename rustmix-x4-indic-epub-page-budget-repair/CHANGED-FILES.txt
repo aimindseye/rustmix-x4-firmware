@@ -1,0 +1,5 @@
+USERGUIDE.md
+scripts/validate_prepared_indic_epub_support.sh
+tools/font_prepare/README.md
+tools/font_prepare/prepare_book.py
+tools/prepared_txt_real_vfnt/src/main.rs

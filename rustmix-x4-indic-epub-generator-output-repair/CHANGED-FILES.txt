@@ -1,0 +1,4 @@
+tools/font_prepare/prepare_book.py
+tools/font_prepare/README.md
+scripts/validate_indic_epub_generator_output_repair.sh
+scripts/validate_prepared_indic_epub_support.sh

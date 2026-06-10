@@ -1,0 +1,3 @@
+USERGUIDE.md
+tools/font_prepare/README.md
+tools/font_prepare/prepare_book.py

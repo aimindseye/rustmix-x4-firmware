@@ -1,9 +1,12 @@
-//! Prepared TXT cache bridge for pre-shaped smoke books.
+//! Prepared book cache bridge for host-shaped TXT and EPUB books.
 //!
-//! The active Reader cannot import the target-owned text foundation without a
-//! dependency cycle, so this module keeps a small read-only bridge beside the
-//! Reader. It understands the same compact VFNT/VRUN byte contracts, but only
-//! enough to render prepared TXT cache pages.
+//! Complex-script shaping stays host-side. The X4 loads compact VFNT bitmap
+//! assets and VRUN positioned-glyph pages from `/FCACHE/<BOOKID>/`.
+//!
+//! Two layouts remain supported:
+//! - cache format 1: legacy smoke caches with global fonts plus `PAGES.IDX`
+//! - cache format 2: production page-local caches with deterministic FAT 8.3
+//!   names and only the current page's fonts resident in heap
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -16,11 +19,16 @@ const META_FILE: &str = "META.TXT";
 const FONTS_INDEX_FILE: &str = "FONTS.IDX";
 const PAGES_INDEX_FILE: &str = "PAGES.IDX";
 
+const CACHE_FORMAT_LEGACY: usize = 1;
+const CACHE_FORMAT_PAGE_LOCAL: usize = 2;
+const LEGACY_MAX_PAGES: usize = 192;
+const PAGE_LOCAL_DIGITS: usize = 5;
+const PAGE_LOCAL_CAPACITY: usize = 60_466_176; // 36^5
+
 const MAX_META_BYTES: usize = 1024;
 const MAX_INDEX_BYTES: usize = 4 * 1024;
-const MAX_FONT_BYTES: usize = 16 * 1024;
+const MAX_FONT_BYTES: usize = 24 * 1024;
 const MAX_PAGE_BYTES: usize = 24 * 1024;
-const MAX_PAGES: usize = 192;
 const MAX_GLYPHS: usize = 1024;
 
 const FONT_LATIN: u32 = 1;
@@ -67,6 +75,12 @@ impl PreparedTxtError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedCacheLayout {
+    Legacy,
+    PageLocalBase36,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PreparedGlyphRecord {
     font_id: u32,
     glyph_id: u32,
@@ -85,14 +99,29 @@ impl PreparedGlyphRecord {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RequiredFonts {
+    latin: bool,
+    devanagari: bool,
+    gujarati: bool,
+}
+
+impl RequiredFonts {
+    const fn empty() -> Self {
+        Self {
+            latin: false,
+            devanagari: false,
+            gujarati: false,
+        }
+    }
+}
+
 pub(super) struct PreparedTxtState {
     active: bool,
+    layout: PreparedCacheLayout,
     book_id: String,
     page_count: usize,
-    page_files: [String; MAX_PAGES],
-    latin_font_name: String,
-    devanagari_font_name: String,
-    gujarati_font_name: String,
+    legacy_page_files: [String; LEGACY_MAX_PAGES],
     latin_font: Vec<u8>,
     devanagari_font: Vec<u8>,
     gujarati_font: Vec<u8>,
@@ -104,12 +133,10 @@ impl PreparedTxtState {
     pub(super) const fn new() -> Self {
         Self {
             active: false,
+            layout: PreparedCacheLayout::Legacy,
             book_id: String::new(),
             page_count: 0,
-            page_files: [const { String::new() }; MAX_PAGES],
-            latin_font_name: String::new(),
-            devanagari_font_name: String::new(),
-            gujarati_font_name: String::new(),
+            legacy_page_files: [const { String::new() }; LEGACY_MAX_PAGES],
             latin_font: Vec::new(),
             devanagari_font: Vec::new(),
             gujarati_font: Vec::new(),
@@ -120,18 +147,20 @@ impl PreparedTxtState {
 
     pub(super) fn clear(&mut self) {
         self.active = false;
+        self.layout = PreparedCacheLayout::Legacy;
         self.book_id.clear();
         self.page_count = 0;
-        for name in &mut self.page_files {
+        for name in &mut self.legacy_page_files {
             name.clear();
         }
-        self.latin_font_name.clear();
-        self.devanagari_font_name.clear();
-        self.gujarati_font_name.clear();
+        self.clear_fonts();
+        self.glyph_count = 0;
+    }
+
+    fn clear_fonts(&mut self) {
         self.latin_font.clear();
         self.devanagari_font.clear();
         self.gujarati_font.clear();
-        self.glyph_count = 0;
     }
 
     pub(super) fn is_active(&self) -> bool {
@@ -150,6 +179,19 @@ impl PreparedTxtState {
     ) -> Result<(), PreparedTxtError> {
         self.clear();
 
+        let result = self.try_open_inner(k, book_id, source_path);
+        if result.is_err() {
+            self.clear();
+        }
+        result
+    }
+
+    fn try_open_inner(
+        &mut self,
+        k: &mut KernelHandle<'_>,
+        book_id: &str,
+        source_path: &str,
+    ) -> Result<(), PreparedTxtError> {
         let meta = read_cache_file(k, book_id, META_FILE, MAX_META_BYTES)?;
         let meta = core::str::from_utf8(&meta).map_err(|_| PreparedTxtError::InvalidMeta)?;
         let parsed_meta = parse_meta(meta)?;
@@ -160,6 +202,24 @@ impl PreparedTxtState {
             return Err(PreparedTxtError::MismatchedBook);
         }
 
+        self.layout = parsed_meta.layout;
+        self.book_id.push_str(book_id);
+        self.page_count = parsed_meta.page_count;
+
+        if self.layout == PreparedCacheLayout::Legacy {
+            self.open_legacy_assets(k, book_id, parsed_meta.page_count)?;
+        }
+
+        self.active = true;
+        self.load_page(k, 0)
+    }
+
+    fn open_legacy_assets(
+        &mut self,
+        k: &mut KernelHandle<'_>,
+        book_id: &str,
+        expected_pages: usize,
+    ) -> Result<(), PreparedTxtError> {
         let fonts_index = read_cache_file(k, book_id, FONTS_INDEX_FILE, MAX_INDEX_BYTES)?;
         let fonts_index =
             core::str::from_utf8(&fonts_index).map_err(|_| PreparedTxtError::InvalidIndex)?;
@@ -168,32 +228,22 @@ impl PreparedTxtState {
         let pages_index = read_cache_file(k, book_id, PAGES_INDEX_FILE, MAX_INDEX_BYTES)?;
         let pages_index =
             core::str::from_utf8(&pages_index).map_err(|_| PreparedTxtError::InvalidIndex)?;
-        let page_count = parse_pages_index(pages_index, &mut self.page_files)?;
-        if page_count == 0 || page_count != parsed_meta.page_count {
+        let page_count = parse_pages_index(pages_index, &mut self.legacy_page_files)?;
+        if page_count == 0 || page_count != expected_pages {
             return Err(PreparedTxtError::InvalidIndex);
         }
 
         self.latin_font = read_cache_file(k, book_id, fonts.latin, MAX_FONT_BYTES)?;
-        self.devanagari_font = read_cache_file(k, book_id, fonts.devanagari, MAX_FONT_BYTES)?;
+        if let Some(devanagari) = fonts.devanagari {
+            self.devanagari_font = read_cache_file(k, book_id, devanagari, MAX_FONT_BYTES)?;
+        }
         if let Some(gujarati) = fonts.gujarati {
             self.gujarati_font = read_cache_file(k, book_id, gujarati, MAX_FONT_BYTES)?;
         }
-        VfntView::parse(&self.latin_font).map_err(|_| PreparedTxtError::InvalidFont)?;
-        VfntView::parse(&self.devanagari_font).map_err(|_| PreparedTxtError::InvalidFont)?;
-        if !self.gujarati_font.is_empty() {
-            VfntView::parse(&self.gujarati_font).map_err(|_| PreparedTxtError::InvalidFont)?;
-        }
-
-        self.book_id.push_str(book_id);
-        self.page_count = page_count;
-        self.latin_font_name.push_str(fonts.latin);
-        self.devanagari_font_name.push_str(fonts.devanagari);
-        if let Some(gujarati) = fonts.gujarati {
-            self.gujarati_font_name.push_str(gujarati);
-        }
-        self.active = true;
-
-        self.load_page(k, 0)
+        validate_loaded_font(&self.latin_font)?;
+        validate_optional_loaded_font(&self.devanagari_font)?;
+        validate_optional_loaded_font(&self.gujarati_font)?;
+        Ok(())
     }
 
     pub(super) fn load_page(
@@ -204,30 +254,54 @@ impl PreparedTxtState {
         if !self.active || page >= self.page_count {
             return Err(PreparedTxtError::InvalidPage);
         }
-        let page_name = &self.page_files[page];
-        let page_data = read_cache_file(k, &self.book_id, page_name, MAX_PAGE_BYTES)?;
-        let count = parse_page_records(&page_data, &mut self.glyphs)?;
 
-        let latin = VfntView::parse(&self.latin_font).map_err(|_| PreparedTxtError::InvalidFont)?;
-        let devanagari =
-            VfntView::parse(&self.devanagari_font).map_err(|_| PreparedTxtError::InvalidFont)?;
-        let gujarati = if !self.gujarati_font.is_empty() {
-            Some(VfntView::parse(&self.gujarati_font).map_err(|_| PreparedTxtError::InvalidFont)?)
-        } else {
-            None
+        let page_name = match self.layout {
+            PreparedCacheLayout::Legacy => self.legacy_page_files[page].clone(),
+            PreparedCacheLayout::PageLocalBase36 => page_local_file_name('P', page, "VRN")?,
         };
-        for glyph in &self.glyphs[..count] {
-            let font = match glyph.font_id {
-                FONT_LATIN => latin,
-                FONT_DEVANAGARI => devanagari,
-                FONT_GUJARATI => gujarati.ok_or(PreparedTxtError::MissingFont)?,
-                _ => return Err(PreparedTxtError::MissingFont),
-            };
-            font.glyph(glyph.glyph_id)
-                .map_err(|_| PreparedTxtError::InvalidPage)?;
+        let page_data = read_cache_file(k, &self.book_id, &page_name, MAX_PAGE_BYTES)?;
+        let count = parse_page_records(&page_data, &mut self.glyphs)?;
+        let required = required_fonts(&self.glyphs[..count])?;
+
+        if self.layout == PreparedCacheLayout::PageLocalBase36 {
+            self.load_page_local_fonts(k, page, required)?;
         }
 
+        validate_glyph_references(
+            &self.latin_font,
+            &self.devanagari_font,
+            &self.gujarati_font,
+            &self.glyphs[..count],
+        )?;
+
         self.glyph_count = count;
+        Ok(())
+    }
+
+    fn load_page_local_fonts(
+        &mut self,
+        k: &mut KernelHandle<'_>,
+        page: usize,
+        required: RequiredFonts,
+    ) -> Result<(), PreparedTxtError> {
+        self.clear_fonts();
+        let book_id = self.book_id.clone();
+
+        if required.latin {
+            let name = page_local_font_file_name(FONT_LATIN, page)?;
+            self.latin_font = read_cache_file(k, &book_id, &name, MAX_FONT_BYTES)?;
+            validate_loaded_font(&self.latin_font)?;
+        }
+        if required.devanagari {
+            let name = page_local_font_file_name(FONT_DEVANAGARI, page)?;
+            self.devanagari_font = read_cache_file(k, &book_id, &name, MAX_FONT_BYTES)?;
+            validate_loaded_font(&self.devanagari_font)?;
+        }
+        if required.gujarati {
+            let name = page_local_font_file_name(FONT_GUJARATI, page)?;
+            self.gujarati_font = read_cache_file(k, &book_id, &name, MAX_FONT_BYTES)?;
+            validate_loaded_font(&self.gujarati_font)?;
+        }
         Ok(())
     }
 
@@ -235,27 +309,20 @@ impl PreparedTxtState {
         if !self.active {
             return;
         }
-        let Ok(latin) = VfntView::parse(&self.latin_font) else {
-            return;
-        };
-        let Ok(devanagari) = VfntView::parse(&self.devanagari_font) else {
-            return;
-        };
-        let gujarati = if !self.gujarati_font.is_empty() {
-            VfntView::parse(&self.gujarati_font).ok()
-        } else {
-            None
-        };
+
+        let latin = VfntView::parse(&self.latin_font).ok();
+        let devanagari = VfntView::parse(&self.devanagari_font).ok();
+        let gujarati = VfntView::parse(&self.gujarati_font).ok();
 
         for glyph in &self.glyphs[..self.glyph_count] {
             let font = match glyph.font_id {
                 FONT_LATIN => latin,
                 FONT_DEVANAGARI => devanagari,
-                FONT_GUJARATI => match gujarati {
-                    Some(font) => font,
-                    None => continue,
-                },
-                _ => continue,
+                FONT_GUJARATI => gujarati,
+                _ => None,
+            };
+            let Some(font) = font else {
+                continue;
             };
             let Ok(bitmap) = font.glyph(glyph.glyph_id) else {
                 continue;
@@ -278,12 +345,13 @@ struct ParsedMeta<'a> {
     book_id: &'a str,
     source: &'a str,
     page_count: usize,
+    layout: PreparedCacheLayout,
 }
 
 #[derive(Debug)]
 struct FontIndex<'a> {
     latin: &'a str,
-    devanagari: &'a str,
+    devanagari: Option<&'a str>,
     gujarati: Option<&'a str>,
 }
 
@@ -449,46 +517,112 @@ fn read_cache_file(
     Ok(data)
 }
 
+fn validate_loaded_font(data: &[u8]) -> Result<(), PreparedTxtError> {
+    VfntView::parse(data)
+        .map(|_| ())
+        .map_err(|_| PreparedTxtError::InvalidFont)
+}
+
+fn validate_optional_loaded_font(data: &[u8]) -> Result<(), PreparedTxtError> {
+    if data.is_empty() {
+        Ok(())
+    } else {
+        validate_loaded_font(data)
+    }
+}
+
+fn validate_glyph_references(
+    latin_data: &[u8],
+    devanagari_data: &[u8],
+    gujarati_data: &[u8],
+    glyphs: &[PreparedGlyphRecord],
+) -> Result<(), PreparedTxtError> {
+    let latin = VfntView::parse(latin_data).ok();
+    let devanagari = VfntView::parse(devanagari_data).ok();
+    let gujarati = VfntView::parse(gujarati_data).ok();
+
+    for glyph in glyphs {
+        let font = match glyph.font_id {
+            FONT_LATIN => latin,
+            FONT_DEVANAGARI => devanagari,
+            FONT_GUJARATI => gujarati,
+            _ => return Err(PreparedTxtError::MissingFont),
+        }
+        .ok_or(PreparedTxtError::MissingFont)?;
+        font.glyph(glyph.glyph_id)
+            .map_err(|_| PreparedTxtError::InvalidPage)?;
+    }
+    Ok(())
+}
+
+fn required_fonts(glyphs: &[PreparedGlyphRecord]) -> Result<RequiredFonts, PreparedTxtError> {
+    let mut out = RequiredFonts::empty();
+    for glyph in glyphs {
+        match glyph.font_id {
+            FONT_LATIN => out.latin = true,
+            FONT_DEVANAGARI => out.devanagari = true,
+            FONT_GUJARATI => out.gujarati = true,
+            _ => return Err(PreparedTxtError::MissingFont),
+        }
+    }
+    Ok(out)
+}
+
 fn parse_meta(input: &str) -> Result<ParsedMeta<'_>, PreparedTxtError> {
     let mut book_id = "";
     let mut source = "";
     let mut page_count = None;
+    let mut cache_format = CACHE_FORMAT_LEGACY;
     for (key, value) in lines(input) {
         match key {
             "book_id" => book_id = value,
             "source" => source = value,
-            "page_count" => {
-                page_count = parse_usize(value);
+            "page_count" => page_count = parse_usize(value),
+            "cache_format" => {
+                cache_format = parse_usize(value).ok_or(PreparedTxtError::InvalidMeta)?;
             }
             _ => {}
         }
     }
     let page_count = page_count.ok_or(PreparedTxtError::InvalidMeta)?;
-    if book_id.is_empty() || page_count == 0 || page_count > MAX_PAGES {
+    let layout = match cache_format {
+        CACHE_FORMAT_LEGACY if page_count <= LEGACY_MAX_PAGES => PreparedCacheLayout::Legacy,
+        CACHE_FORMAT_PAGE_LOCAL if page_count <= PAGE_LOCAL_CAPACITY => {
+            PreparedCacheLayout::PageLocalBase36
+        }
+        _ => return Err(PreparedTxtError::InvalidMeta),
+    };
+    if book_id.is_empty() || page_count == 0 {
         return Err(PreparedTxtError::InvalidMeta);
     }
     Ok(ParsedMeta {
         book_id,
         source,
         page_count,
+        layout,
     })
 }
 
 fn parse_fonts_index(input: &str) -> Result<FontIndex<'_>, PreparedTxtError> {
     let mut latin = "";
-    let mut devanagari = "";
+    let mut devanagari = None;
     let mut gujarati = None;
     for (key, value) in lines(input) {
         if key.eq_ignore_ascii_case("Latin") {
             latin = value;
         } else if key.eq_ignore_ascii_case("Devanagari") {
-            devanagari = value;
+            devanagari = Some(value);
         } else if key.eq_ignore_ascii_case("Gujarati") {
             gujarati = Some(value);
         }
     }
-    if !valid_cache_file(latin) || !valid_cache_file(devanagari) {
+    if !valid_cache_file(latin) {
         return Err(PreparedTxtError::MissingFont);
+    }
+    if let Some(file) = devanagari {
+        if !valid_cache_file(file) {
+            return Err(PreparedTxtError::MissingFont);
+        }
     }
     if let Some(file) = gujarati {
         if !valid_cache_file(file) {
@@ -504,7 +638,7 @@ fn parse_fonts_index(input: &str) -> Result<FontIndex<'_>, PreparedTxtError> {
 
 fn parse_pages_index(
     input: &str,
-    pages: &mut [String; MAX_PAGES],
+    pages: &mut [String; LEGACY_MAX_PAGES],
 ) -> Result<usize, PreparedTxtError> {
     let mut count = 0usize;
     for raw in input.lines() {
@@ -512,7 +646,7 @@ fn parse_pages_index(
         if page.is_empty() {
             continue;
         }
-        if count >= MAX_PAGES || !valid_cache_file(page) {
+        if count >= LEGACY_MAX_PAGES || !valid_cache_file(page) {
             return Err(PreparedTxtError::InvalidIndex);
         }
         pages[count].clear();
@@ -520,6 +654,55 @@ fn parse_pages_index(
         count += 1;
     }
     Ok(count)
+}
+
+fn page_local_file_name(
+    prefix: char,
+    page: usize,
+    extension: &str,
+) -> Result<String, PreparedTxtError> {
+    if !prefix.is_ascii_alphanumeric()
+        || extension.len() != 3
+        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        || page >= PAGE_LOCAL_CAPACITY
+    {
+        return Err(PreparedTxtError::TooLarge);
+    }
+
+    let mut value = page;
+    let mut digits = [b'0'; PAGE_LOCAL_DIGITS];
+    for slot in digits.iter_mut().rev() {
+        let digit = (value % 36) as u8;
+        *slot = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'A' + (digit - 10)
+        };
+        value /= 36;
+    }
+
+    let mut out = String::new();
+    out.push(prefix);
+    for digit in digits {
+        out.push(char::from(digit));
+    }
+    out.push('.');
+    out.push_str(extension);
+    if valid_cache_file(&out) {
+        Ok(out)
+    } else {
+        Err(PreparedTxtError::InvalidPage)
+    }
+}
+
+fn page_local_font_file_name(font_id: u32, page: usize) -> Result<String, PreparedTxtError> {
+    let prefix = match font_id {
+        FONT_LATIN => 'L',
+        FONT_DEVANAGARI => 'D',
+        FONT_GUJARATI => 'G',
+        _ => return Err(PreparedTxtError::MissingFont),
+    };
+    page_local_file_name(prefix, page, "VFN")
 }
 
 fn parse_page_records(
@@ -576,42 +759,21 @@ fn parse_usize(input: &str) -> Option<usize> {
     if input.is_empty() {
         return None;
     }
-    for b in input.bytes() {
-        if !b.is_ascii_digit() {
+    for byte in input.bytes() {
+        if !byte.is_ascii_digit() {
             return None;
         }
-        value = value.checked_mul(10)?.checked_add(usize::from(b - b'0'))?;
+        value = value
+            .checked_mul(10)?
+            .checked_add(usize::from(byte - b'0'))?;
     }
     Some(value)
 }
 
 fn source_matches(_cache_source: &str, _reader_source: &str) -> bool {
-    // The prepared cache directory/book_id is the authority.
-    // Do not reject a cache because FAT 8.3 names, case, or leading slashes differ.
+    // The prepared cache directory/book_id is authoritative. Do not reject a
+    // cache because FAT 8.3 names, case, or leading slashes differ.
     true
-}
-
-#[allow(dead_code)]
-fn path_basename(path: &str) -> &str {
-    path.rsplit(|ch| ch == '/' || ch == '\\')
-        .next()
-        .unwrap_or(path)
-}
-
-#[allow(dead_code)]
-fn normalized_eq(a: &str, b: &str) -> bool {
-    a.bytes()
-        .map(normalize_path_byte)
-        .eq(b.bytes().map(normalize_path_byte))
-}
-
-#[allow(dead_code)]
-fn normalize_path_byte(b: u8) -> u8 {
-    match b {
-        b'\\' => b'/',
-        b'A'..=b'Z' => b + 32,
-        _ => b,
-    }
 }
 
 fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
@@ -626,7 +788,7 @@ fn valid_cache_file(name: &str) -> bool {
         && name.len() <= 12
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'_')
 }
 
 fn checked_range(total: usize, start: usize, len: usize) -> Result<(), PreparedTxtError> {
@@ -671,10 +833,25 @@ mod tests {
         let parsed = parse_meta(meta).unwrap();
         assert_eq!(parsed.book_id, "ABCDEF12");
         assert_eq!(parsed.page_count, 1);
+        assert_eq!(parsed.layout, PreparedCacheLayout::Legacy);
     }
 
     #[test]
-    fn missing_prepared_cache_falls_back_to_txt_reader() {
+    fn parses_page_local_cache_with_real_book_page_count() {
+        let meta = "book_id=ABCDEF12\nsource=/Books/GARUD.EPU\ncache_format=2\npage_count=4096\n";
+        let parsed = parse_meta(meta).unwrap();
+        assert_eq!(parsed.page_count, 4096);
+        assert_eq!(parsed.layout, PreparedCacheLayout::PageLocalBase36);
+    }
+
+    #[test]
+    fn rejects_oversized_legacy_page_index() {
+        let meta = "book_id=ABCDEF12\npage_count=193\n";
+        assert_eq!(parse_meta(meta).unwrap_err(), PreparedTxtError::InvalidMeta);
+    }
+
+    #[test]
+    fn missing_prepared_cache_falls_back_to_reader() {
         let state = PreparedTxtState::new();
         assert!(!state.is_active());
     }
@@ -686,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_pages_index() {
+    fn parses_legacy_pages_index() {
         let mut pages = core::array::from_fn(|_| String::new());
         let count = parse_pages_index("P000.VRN\nP001.VRN\n", &mut pages).unwrap();
         assert_eq!(count, 2);
@@ -695,18 +872,66 @@ mod tests {
     }
 
     #[test]
-    fn parses_fonts_index_for_latin_and_devanagari() {
-        let fonts = parse_fonts_index("Latin=LAT18.VFN\nDevanagari=DEV22.VFN\n").unwrap();
-        assert_eq!(fonts.latin, "LAT18.VFN");
-        assert_eq!(fonts.devanagari, "DEV22.VFN");
+    fn generates_page_local_fat_83_names() {
+        assert_eq!(page_local_file_name('P', 0, "VRN").unwrap(), "P00000.VRN");
+        assert_eq!(page_local_file_name('P', 35, "VRN").unwrap(), "P0000Z.VRN");
+        assert_eq!(page_local_file_name('P', 36, "VRN").unwrap(), "P00010.VRN");
+        assert_eq!(
+            page_local_font_file_name(FONT_DEVANAGARI, 1).unwrap(),
+            "D00001.VFN"
+        );
+        assert_eq!(
+            page_local_font_file_name(FONT_GUJARATI, 1).unwrap(),
+            "G00001.VFN"
+        );
     }
 
     #[test]
-    fn rejects_missing_font_asset() {
+    fn parses_legacy_fonts_index_with_optional_script_fonts() {
+        let fonts =
+            parse_fonts_index("Latin=LAT18.VFN\nDevanagari=DEV22.VFN\nGujarati=GUJ22.VFN\n")
+                .unwrap();
+        assert_eq!(fonts.latin, "LAT18.VFN");
+        assert_eq!(fonts.devanagari, Some("DEV22.VFN"));
+        assert_eq!(fonts.gujarati, Some("GUJ22.VFN"));
+    }
+
+    #[test]
+    fn accepts_latin_only_legacy_fonts_index() {
+        let fonts = parse_fonts_index("Latin=LAT18.VFN\n").unwrap();
+        assert_eq!(fonts.latin, "LAT18.VFN");
+        assert_eq!(fonts.devanagari, None);
+        assert_eq!(fonts.gujarati, None);
+    }
+
+    #[test]
+    fn rejects_missing_latin_font_asset() {
         assert_eq!(
-            parse_fonts_index("Latin=LAT18.VFN\n").unwrap_err(),
+            parse_fonts_index("Devanagari=DEV22.VFN\n").unwrap_err(),
             PreparedTxtError::MissingFont
         );
+    }
+
+    #[test]
+    fn detects_fonts_required_by_gujarati_page() {
+        let glyphs = [
+            PreparedGlyphRecord {
+                font_id: FONT_LATIN,
+                glyph_id: 65,
+                x: 0,
+                y: 0,
+            },
+            PreparedGlyphRecord {
+                font_id: FONT_GUJARATI,
+                glyph_id: 42,
+                x: 12,
+                y: 8,
+            },
+        ];
+        let required = required_fonts(&glyphs).unwrap();
+        assert!(required.latin);
+        assert!(!required.devanagari);
+        assert!(required.gujarati);
     }
 
     #[test]
@@ -725,7 +950,7 @@ mod tests {
             },
             PreparedGlyphRecord {
                 font_id: FONT_DEVANAGARI,
-                glyph_id: 0x0950,
+                glyph_id: 42,
                 x: 12,
                 y: 8,
             },

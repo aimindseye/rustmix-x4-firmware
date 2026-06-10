@@ -13,6 +13,7 @@ const VFNT_BITMAP_LEN: usize = 16;
 const VFNT_ONE_BPP: u16 = 1;
 const SCRIPT_LATIN: u16 = 1;
 const SCRIPT_DEVANAGARI: u16 = 2;
+const SCRIPT_GUJARATI: u16 = 3;
 
 const VRUN_MAGIC: &[u8; 4] = b"VRUN";
 const VRUN_VERSION: u16 = 1;
@@ -21,8 +22,14 @@ const VRUN_RECORD_LEN: usize = 20;
 
 const FONT_LATIN: u32 = 1;
 const FONT_DEVANAGARI: u32 = 2;
-const LATIN_FILE: &str = "LAT18.VFN";
-const DEVANAGARI_FILE: &str = "DEV22.VFN";
+const FONT_GUJARATI: u32 = 3;
+
+const CACHE_FORMAT_PAGE_LOCAL: usize = 2;
+const PAGE_LOCAL_DIGITS: usize = 5;
+const PAGE_LOCAL_CAPACITY: usize = 60_466_176; // 36^5
+const MAX_PAGE_GLYPHS: usize = 1024;
+const MAX_PAGE_BYTES: usize = 24 * 1024;
+const MAX_FONT_BYTES: usize = 24 * 1024;
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -30,10 +37,12 @@ struct Args {
     device_path: String,
     latin_font: PathBuf,
     devanagari_font: PathBuf,
+    gujarati_font: Option<PathBuf>,
     out: PathBuf,
     title: String,
     latin_size: f32,
     devanagari_size: f32,
+    gujarati_size: f32,
     line_height: Option<i16>,
     page_width: i16,
     page_height: i16,
@@ -45,6 +54,7 @@ struct Args {
 enum ScriptKind {
     Latin,
     Devanagari,
+    Gujarati,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +90,75 @@ struct PreparedPage {
     glyphs: Vec<PositionedGlyph>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct GlyphResource {
+    font_id: u32,
+    glyph_id: u32,
+    bitmap_bytes: usize,
+}
+
+struct MeasuredGlyph {
+    shaped: ShapedGlyph,
+    metrics: Metrics,
+    resource: GlyphResource,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PageBudget {
+    glyph_count: usize,
+    font_bytes: [usize; 3],
+    glyph_ids: BTreeSet<(u32, u32)>,
+}
+
+impl PageBudget {
+    fn projected(&self, resources: &[GlyphResource]) -> Result<Option<Self>, String> {
+        let glyph_count = self
+            .glyph_count
+            .checked_add(resources.len())
+            .ok_or_else(|| "prepared page glyph count overflows".to_string())?;
+        let page_bytes = VRUN_HEADER_LEN
+            .checked_add(
+                glyph_count
+                    .checked_mul(VRUN_RECORD_LEN)
+                    .ok_or_else(|| "prepared page byte count overflows".to_string())?,
+            )
+            .ok_or_else(|| "prepared page byte count overflows".to_string())?;
+        if glyph_count > MAX_PAGE_GLYPHS || page_bytes > MAX_PAGE_BYTES {
+            return Ok(None);
+        }
+
+        let mut projected = self.clone();
+        projected.glyph_count = glyph_count;
+        for resource in resources {
+            let slot = font_budget_slot(resource.font_id)?;
+            if projected
+                .glyph_ids
+                .insert((resource.font_id, resource.glyph_id))
+            {
+                if projected.font_bytes[slot] == 0 {
+                    projected.font_bytes[slot] = VFNT_HEADER_LEN;
+                }
+                projected.font_bytes[slot] = projected.font_bytes[slot]
+                    .checked_add(VFNT_METRICS_LEN + VFNT_BITMAP_LEN)
+                    .and_then(|size| size.checked_add(resource.bitmap_bytes))
+                    .ok_or_else(|| "page-local font byte count overflows".to_string())?;
+                if projected.font_bytes[slot] > MAX_FONT_BYTES {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(projected))
+    }
+
+    fn add(&mut self, resources: &[GlyphResource]) -> Result<bool, String> {
+        let Some(projected) = self.projected(resources)? else {
+            return Ok(false);
+        };
+        *self = projected;
+        Ok(true)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct GlyphAsset {
     glyph_id: u32,
@@ -105,6 +184,11 @@ fn run() -> Result<(), String> {
         fs::read_to_string(&args.book).map_err(|err| format!("read book as UTF-8: {err}"))?;
     let latin_data = read_required_file(&args.latin_font, "Latin font")?;
     let devanagari_data = read_required_file(&args.devanagari_font, "Devanagari font")?;
+    let gujarati_data = args
+        .gujarati_font
+        .as_ref()
+        .map(|path| read_required_file(path, "Gujarati font"))
+        .transpose()?;
 
     let mut latin_face =
         Face::from_slice(&latin_data, 0).ok_or("parse Latin font with rustybuzz")?;
@@ -112,89 +196,167 @@ fn run() -> Result<(), String> {
     let mut devanagari_face =
         Face::from_slice(&devanagari_data, 0).ok_or("parse Devanagari font with rustybuzz")?;
     devanagari_face.set_points_per_em(Some(args.devanagari_size));
+    let gujarati_face = match gujarati_data.as_ref() {
+        Some(data) => {
+            let mut face = Face::from_slice(data, 0).ok_or("parse Gujarati font with rustybuzz")?;
+            face.set_points_per_em(Some(args.gujarati_size));
+            Some(face)
+        }
+        None => None,
+    };
 
     let latin_font = Font::from_bytes(latin_data.clone(), FontSettings::default())
         .map_err(|err| format!("parse Latin font for rasterization: {err}"))?;
     let devanagari_font = Font::from_bytes(devanagari_data.clone(), FontSettings::default())
         .map_err(|err| format!("parse Devanagari font for rasterization: {err}"))?;
+    let gujarati_font = match gujarati_data.as_ref() {
+        Some(data) => Some(
+            Font::from_bytes(data.clone(), FontSettings::default())
+                .map_err(|err| format!("parse Gujarati font for rasterization: {err}"))?,
+        ),
+        None => None,
+    };
 
-    let layout = layout_text(
+    let mut layout = layout_text(
         &args,
         &text,
         &latin_face,
         &devanagari_face,
+        gujarati_face.as_ref(),
         &latin_font,
         &devanagari_font,
+        gujarati_font.as_ref(),
     )?;
+    while layout.pages.len() > 1
+        && layout
+            .pages
+            .last()
+            .map_or(false, |page| page.glyphs.is_empty())
+    {
+        layout.pages.pop();
+    }
     if layout.pages.iter().all(|page| page.glyphs.is_empty()) {
         return Err("prepared page has no glyphs".to_string());
     }
-
-    let latin_assets = rasterize_used_glyphs(
-        &latin_font,
-        args.latin_size,
-        layout.used_latin.iter().copied(),
-    )?;
-    let devanagari_assets = rasterize_used_glyphs(
-        &devanagari_font,
-        args.devanagari_size,
-        layout.used_devanagari.iter().copied(),
-    )?;
-
-    let latin_vfnt = build_vfnt(SCRIPT_LATIN, args.latin_size, &latin_assets)?;
-    let devanagari_vfnt = build_vfnt(SCRIPT_DEVANAGARI, args.devanagari_size, &devanagari_assets)?;
-    validate_vfnt(&latin_vfnt)?;
-    validate_vfnt(&devanagari_vfnt)?;
+    if layout.pages.len() > PAGE_LOCAL_CAPACITY {
+        return Err(format!(
+            "prepared cache has too many pages: {} > {PAGE_LOCAL_CAPACITY}",
+            layout.pages.len()
+        ));
+    }
 
     let book_id = book_folder_for_path(&args.device_path);
-    let cache_dir = args.out.join(&book_id);
-    fs::create_dir_all(&cache_dir).map_err(|err| format!("create cache directory: {err}"))?;
-    fs::write(cache_dir.join(LATIN_FILE), &latin_vfnt)
-        .map_err(|err| format!("write {LATIN_FILE}: {err}"))?;
-    fs::write(cache_dir.join(DEVANAGARI_FILE), &devanagari_vfnt)
-        .map_err(|err| format!("write {DEVANAGARI_FILE}: {err}"))?;
+    let final_cache_dir = args.out.join(&book_id);
+    let cache_dir = args.out.join(format!("{book_id}.TMP"));
+    let backup_cache_dir = args.out.join(format!("{book_id}.BAK"));
+    fs::create_dir_all(&args.out).map_err(|err| format!("create output directory: {err}"))?;
+    remove_dir_if_present(&cache_dir, "remove stale staging cache")?;
+    remove_dir_if_present(&backup_cache_dir, "remove stale backup cache")?;
+    fs::create_dir_all(&cache_dir)
+        .map_err(|err| format!("create staging cache directory: {err}"))?;
 
-    let latin_ids = vfnt_glyph_ids(&latin_vfnt)?;
-    let devanagari_ids = vfnt_glyph_ids(&devanagari_vfnt)?;
-    let mut page_names = Vec::new();
+    let mut max_page_bytes = 0usize;
+    let mut max_font_bytes = 0usize;
+    let mut latin_pages = 0usize;
+    let mut devanagari_pages = 0usize;
+    let mut gujarati_pages = 0usize;
+
     for (index, page) in layout.pages.iter().enumerate() {
-        validate_page_references(page, &latin_ids, &devanagari_ids)?;
-        let name = format!("P{index:03}.VRN");
-        let data = build_vrun(page, args.page_width as u16, args.page_height as u16)?;
-        fs::write(cache_dir.join(&name), data).map_err(|err| format!("write {name}: {err}"))?;
-        page_names.push(name);
+        if page.glyphs.len() > MAX_PAGE_GLYPHS {
+            return Err(format!(
+                "page {index} has {} glyphs; firmware limit is {MAX_PAGE_GLYPHS}",
+                page.glyphs.len()
+            ));
+        }
+        let page_name = page_local_file_name('P', index, "VRN")?;
+        let page_data = build_vrun(page, args.page_width as u16, args.page_height as u16)?;
+        if page_data.len() > MAX_PAGE_BYTES {
+            return Err(format!(
+                "page {page_name} is {} bytes; firmware limit is {MAX_PAGE_BYTES}",
+                page_data.len()
+            ));
+        }
+        max_page_bytes = max_page_bytes.max(page_data.len());
+        fs::write(cache_dir.join(&page_name), &page_data)
+            .map_err(|err| format!("write {page_name}: {err}"))?;
+
+        let latin_ids = write_page_font(
+            &cache_dir,
+            page,
+            index,
+            FONT_LATIN,
+            'L',
+            SCRIPT_LATIN,
+            &latin_font,
+            args.latin_size,
+            &mut max_font_bytes,
+        )?;
+        if !latin_ids.is_empty() {
+            latin_pages += 1;
+        }
+        let devanagari_ids = write_page_font(
+            &cache_dir,
+            page,
+            index,
+            FONT_DEVANAGARI,
+            'D',
+            SCRIPT_DEVANAGARI,
+            &devanagari_font,
+            args.devanagari_size,
+            &mut max_font_bytes,
+        )?;
+        if !devanagari_ids.is_empty() {
+            devanagari_pages += 1;
+        }
+        let gujarati_ids = glyph_ids_for_font(page, FONT_GUJARATI);
+        if !gujarati_ids.is_empty() {
+            let font = gujarati_font.as_ref().ok_or_else(|| {
+                "book contains Gujarati text; pass --gujarati-font <TTF>".to_string()
+            })?;
+            write_page_font_ids(
+                &cache_dir,
+                index,
+                'G',
+                SCRIPT_GUJARATI,
+                font,
+                args.gujarati_size,
+                &gujarati_ids,
+                &mut max_font_bytes,
+            )?;
+            gujarati_pages += 1;
+        }
+        validate_page_references(page, &latin_ids, &devanagari_ids, &gujarati_ids)?;
     }
 
     fs::write(
-        cache_dir.join("FONTS.IDX"),
-        format!("Latin={LATIN_FILE}\nDevanagari={DEVANAGARI_FILE}\n"),
-    )
-    .map_err(|err| format!("write FONTS.IDX: {err}"))?;
-    fs::write(cache_dir.join("PAGES.IDX"), page_names.join("\n") + "\n")
-        .map_err(|err| format!("write PAGES.IDX: {err}"))?;
-    fs::write(
         cache_dir.join("META.TXT"),
         format!(
-            "book_id={book_id}\nsource=/{}\ntitle={}\npage_count={}\nlatin_font={LATIN_FILE}\ndevanagari_font={DEVANAGARI_FILE}\npages=PAGES.IDX\n",
-            args.device_path.trim_start_matches('/'),
-            args.title,
-            page_names.len()
+            "book_id={book_id}\nsource=/{}\ntitle={}\ncache_format={CACHE_FORMAT_PAGE_LOCAL}\npage_count={}\npage_name_scheme=base36-local-v1\n",
+            meta_value(args.device_path.trim_start_matches('/')),
+            meta_value(&args.title),
+            layout.pages.len()
         ),
     )
     .map_err(|err| format!("write META.TXT: {err}"))?;
 
+    replace_cache_directory(&cache_dir, &final_cache_dir, &backup_cache_dir)?;
+
     println!("book_id={book_id}");
-    println!("prepared cache: {}", cache_dir.display());
-    println!("pages={}", page_names.len());
-    println!("latin_glyphs={}", latin_ids.len());
-    println!("devanagari_glyphs={}", devanagari_ids.len());
+    println!("prepared cache: {}", final_cache_dir.display());
+    println!("cache_format={CACHE_FORMAT_PAGE_LOCAL}");
+    println!("pages={}", layout.pages.len());
+    println!("latin_pages={latin_pages}");
+    println!("devanagari_pages={devanagari_pages}");
+    println!("gujarati_pages={gujarati_pages}");
+    println!("resource_split_pages={}", layout.resource_split_pages);
+    println!("max_page_bytes={max_page_bytes}");
+    println!("max_font_bytes={max_font_bytes}");
     Ok(())
 }
 
 struct LayoutResult {
     pages: Vec<PreparedPage>,
-    used_latin: BTreeSet<u32>,
-    used_devanagari: BTreeSet<u32>,
+    resource_split_pages: usize,
 }
 
 fn layout_text(
@@ -202,19 +364,26 @@ fn layout_text(
     text: &str,
     latin_face: &Face<'_>,
     devanagari_face: &Face<'_>,
+    gujarati_face: Option<&Face<'_>>,
     latin_font: &Font,
     devanagari_font: &Font,
+    gujarati_font: Option<&Font>,
 ) -> Result<LayoutResult, String> {
     let line_height = args.line_height.unwrap_or_else(|| {
-        (args.latin_size.max(args.devanagari_size).ceil() as i16).saturating_add(8)
+        (args
+            .latin_size
+            .max(args.devanagari_size)
+            .max(args.gujarati_size)
+            .ceil() as i16)
+            .saturating_add(8)
     });
     let baseline_start = args.margin_y + line_height;
     let mut pages = vec![PreparedPage { glyphs: Vec::new() }];
     let mut page_index = 0usize;
+    let mut page_budget = PageBudget::default();
+    let mut resource_split_pages = 0usize;
     let mut x = args.margin_x;
     let mut baseline = baseline_start;
-    let mut used_latin = BTreeSet::new();
-    let mut used_devanagari = BTreeSet::new();
 
     for line in text.split('\n') {
         for run in split_script_runs(line) {
@@ -233,10 +402,38 @@ fn layout_text(
                     args.devanagari_size,
                     FONT_DEVANAGARI,
                 )?,
+                ScriptKind::Gujarati => {
+                    let face = gujarati_face.ok_or_else(|| {
+                        "book contains Gujarati text; pass --gujarati-font <TTF>".to_string()
+                    })?;
+                    shape_run(
+                        run.text,
+                        ScriptKind::Gujarati,
+                        face,
+                        args.gujarati_size,
+                        FONT_GUJARATI,
+                    )?
+                }
             };
-            for glyph in shaped {
-                if x + glyph.advance_x > args.page_width && x > args.margin_x {
-                    next_line(
+            let mut cluster_start = 0usize;
+            while cluster_start < shaped.len() {
+                let cluster_id = shaped[cluster_start].cluster;
+                let mut cluster_end = cluster_start + 1;
+                while cluster_end < shaped.len() && shaped[cluster_end].cluster == cluster_id {
+                    cluster_end += 1;
+                }
+                let measured = measure_cluster(
+                    &shaped[cluster_start..cluster_end],
+                    args,
+                    latin_font,
+                    devanagari_font,
+                    gujarati_font,
+                )?;
+                let cluster_advance = measured.iter().fold(0i16, |advance, glyph| {
+                    advance.saturating_add(glyph.shaped.advance_x)
+                });
+                if x.saturating_add(cluster_advance) > args.page_width && x > args.margin_x {
+                    if next_line(
                         &mut pages,
                         &mut page_index,
                         &mut x,
@@ -244,44 +441,60 @@ fn layout_text(
                         args,
                         line_height,
                         baseline_start,
+                    ) {
+                        page_budget = PageBudget::default();
+                    }
+                }
+
+                let resources: Vec<_> = measured.iter().map(|glyph| glyph.resource).collect();
+                if !page_budget.add(&resources)? {
+                    if pages[page_index].glyphs.is_empty() {
+                        return Err(format!(
+                            "single shaped cluster at byte {} cannot fit the firmware page budget",
+                            cluster_id
+                        ));
+                    }
+                    next_page(
+                        &mut pages,
+                        &mut page_index,
+                        &mut x,
+                        &mut baseline,
+                        args,
+                        baseline_start,
                     );
-                }
-                let (metrics, _) = font_metrics_for(
-                    glyph.font_id,
-                    glyph.glyph_id,
-                    args,
-                    latin_font,
-                    devanagari_font,
-                )?;
-                let draw_x = x
-                    .saturating_add(glyph.x_offset)
-                    .saturating_add(metrics.xmin as i16);
-                let draw_y = baseline
-                    .saturating_sub(metrics.height as i16)
-                    .saturating_sub(metrics.ymin as i16)
-                    .saturating_add(glyph.y_offset);
-                pages[page_index].glyphs.push(PositionedGlyph {
-                    font_id: glyph.font_id,
-                    glyph_id: glyph.glyph_id,
-                    x: draw_x,
-                    y: draw_y,
-                    advance_x: glyph.advance_x,
-                    advance_y: glyph.advance_y,
-                    cluster: glyph.cluster,
-                });
-                match glyph.font_id {
-                    FONT_LATIN => {
-                        used_latin.insert(glyph.glyph_id);
+                    resource_split_pages += 1;
+                    page_budget = PageBudget::default();
+                    if !page_budget.add(&resources)? {
+                        return Err(format!(
+                            "single shaped cluster at byte {} cannot fit the firmware page budget",
+                            cluster_id
+                        ));
                     }
-                    FONT_DEVANAGARI => {
-                        used_devanagari.insert(glyph.glyph_id);
-                    }
-                    _ => {}
                 }
-                x = x.saturating_add(glyph.advance_x);
+
+                for glyph in measured {
+                    let draw_x = x
+                        .saturating_add(glyph.shaped.x_offset)
+                        .saturating_add(glyph.metrics.xmin as i16);
+                    let draw_y = baseline
+                        .saturating_sub(glyph.metrics.height as i16)
+                        .saturating_sub(glyph.metrics.ymin as i16)
+                        .saturating_add(glyph.shaped.y_offset);
+                    pages[page_index].glyphs.push(PositionedGlyph {
+                        font_id: glyph.shaped.font_id,
+                        glyph_id: glyph.shaped.glyph_id,
+                        x: draw_x,
+                        y: draw_y,
+                        advance_x: glyph.shaped.advance_x,
+                        advance_y: glyph.shaped.advance_y,
+                        cluster: glyph.shaped.cluster,
+                    });
+                    x = x.saturating_add(glyph.shaped.advance_x);
+                }
+                cluster_start = cluster_end;
             }
         }
-        next_line(
+        if next_line(
             &mut pages,
             &mut page_index,
             &mut x,
@@ -289,14 +502,58 @@ fn layout_text(
             args,
             line_height,
             baseline_start,
-        );
+        ) {
+            page_budget = PageBudget::default();
+        }
     }
 
     Ok(LayoutResult {
         pages,
-        used_latin,
-        used_devanagari,
+        resource_split_pages,
     })
+}
+
+fn measure_cluster(
+    shaped: &[ShapedGlyph],
+    args: &Args,
+    latin_font: &Font,
+    devanagari_font: &Font,
+    gujarati_font: Option<&Font>,
+) -> Result<Vec<MeasuredGlyph>, String> {
+    let mut out = Vec::with_capacity(shaped.len());
+    for glyph in shaped {
+        let (metrics, _) = font_metrics_for(
+            glyph.font_id,
+            glyph.glyph_id,
+            args,
+            latin_font,
+            devanagari_font,
+            gujarati_font,
+        )?;
+        out.push(MeasuredGlyph {
+            shaped: *glyph,
+            resource: GlyphResource {
+                font_id: glyph.font_id,
+                glyph_id: glyph.glyph_id,
+                bitmap_bytes: one_bpp_bitmap_len(&metrics),
+            },
+            metrics,
+        });
+    }
+    Ok(out)
+}
+
+fn one_bpp_bitmap_len(metrics: &Metrics) -> usize {
+    metrics.width.div_ceil(8).saturating_mul(metrics.height)
+}
+
+fn font_budget_slot(font_id: u32) -> Result<usize, String> {
+    match font_id {
+        FONT_LATIN => Ok(0),
+        FONT_DEVANAGARI => Ok(1),
+        FONT_GUJARATI => Ok(2),
+        _ => Err(format!("unknown font slot: {font_id}")),
+    }
 }
 
 fn font_metrics_for(
@@ -305,16 +562,18 @@ fn font_metrics_for(
     args: &Args,
     latin_font: &Font,
     devanagari_font: &Font,
+    gujarati_font: Option<&Font>,
 ) -> Result<(Metrics, Vec<u8>), String> {
-    let font = if font_id == FONT_LATIN {
-        latin_font
-    } else {
-        devanagari_font
-    };
-    let size = if font_id == FONT_LATIN {
-        args.latin_size
-    } else {
-        args.devanagari_size
+    let (font, size) = match font_id {
+        FONT_LATIN => (latin_font, args.latin_size),
+        FONT_DEVANAGARI => (devanagari_font, args.devanagari_size),
+        FONT_GUJARATI => (
+            gujarati_font.ok_or_else(|| {
+                "book contains Gujarati text; pass --gujarati-font <TTF>".to_string()
+            })?,
+            args.gujarati_size,
+        ),
+        _ => return Err(format!("unknown font slot: {font_id}")),
     };
     rasterize_one(font, size, glyph_id)
 }
@@ -327,14 +586,29 @@ fn next_line(
     args: &Args,
     line_height: i16,
     baseline_start: i16,
-) {
+) -> bool {
     *x = args.margin_x;
     *baseline = baseline.saturating_add(line_height);
     if *baseline + line_height > args.page_height {
-        pages.push(PreparedPage { glyphs: Vec::new() });
-        *page_index += 1;
-        *baseline = baseline_start;
+        next_page(pages, page_index, x, baseline, args, baseline_start);
+        true
+    } else {
+        false
     }
+}
+
+fn next_page(
+    pages: &mut Vec<PreparedPage>,
+    page_index: &mut usize,
+    x: &mut i16,
+    baseline: &mut i16,
+    args: &Args,
+    baseline_start: i16,
+) {
+    pages.push(PreparedPage { glyphs: Vec::new() });
+    *page_index += 1;
+    *x = args.margin_x;
+    *baseline = baseline_start;
 }
 
 fn shape_run(
@@ -350,6 +624,7 @@ fn shape_run(
     buffer.set_script(match script_kind {
         ScriptKind::Latin => script::LATIN,
         ScriptKind::Devanagari => script::DEVANAGARI,
+        ScriptKind::Gujarati => script::GUJARATI,
     });
     let shaped = rustybuzz::shape(face, &[], buffer);
     let scale = px / face.units_per_em() as f32;
@@ -375,11 +650,7 @@ fn split_script_runs(input: &str) -> Vec<TextRun<'_>> {
     let mut start = 0usize;
     let mut current = None;
     for (index, ch) in input.char_indices() {
-        let script = if is_devanagari(ch) {
-            ScriptKind::Devanagari
-        } else {
-            ScriptKind::Latin
-        };
+        let script = script_for_char(ch);
         if let Some(active) = current {
             if active != script {
                 runs.push(TextRun {
@@ -403,8 +674,28 @@ fn split_script_runs(input: &str) -> Vec<TextRun<'_>> {
     runs
 }
 
+fn script_for_char(ch: char) -> ScriptKind {
+    if is_devanagari(ch) {
+        ScriptKind::Devanagari
+    } else if is_gujarati(ch) {
+        ScriptKind::Gujarati
+    } else {
+        ScriptKind::Latin
+    }
+}
+
 fn is_devanagari(ch: char) -> bool {
-    ('\u{0900}'..='\u{097F}').contains(&ch)
+    matches!(
+        ch,
+        '\u{0900}'..='\u{097F}'
+            | '\u{1CD0}'..='\u{1CFF}'
+            | '\u{A8E0}'..='\u{A8FF}'
+            | '\u{11B00}'..='\u{11B5F}'
+    )
+}
+
+fn is_gujarati(ch: char) -> bool {
+    ('\u{0A80}'..='\u{0AFF}').contains(&ch)
 }
 
 fn rasterize_used_glyphs<I>(font: &Font, px: f32, glyph_ids: I) -> Result<Vec<GlyphAsset>, String>
@@ -446,6 +737,127 @@ fn coverage_to_one_bpp(grayscale: &[u8], width: usize, height: usize) -> (Vec<u8
         }
     }
     (out, row_stride as u16)
+}
+
+fn glyph_ids_for_font(page: &PreparedPage, font_id: u32) -> BTreeSet<u32> {
+    page.glyphs
+        .iter()
+        .filter(|glyph| glyph.font_id == font_id)
+        .map(|glyph| glyph.glyph_id)
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_page_font(
+    cache_dir: &Path,
+    page: &PreparedPage,
+    page_index: usize,
+    font_id: u32,
+    prefix: char,
+    script_code: u16,
+    font: &Font,
+    size: f32,
+    max_font_bytes: &mut usize,
+) -> Result<BTreeSet<u32>, String> {
+    let ids = glyph_ids_for_font(page, font_id);
+    if !ids.is_empty() {
+        write_page_font_ids(
+            cache_dir,
+            page_index,
+            prefix,
+            script_code,
+            font,
+            size,
+            &ids,
+            max_font_bytes,
+        )?;
+    }
+    Ok(ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_page_font_ids(
+    cache_dir: &Path,
+    page_index: usize,
+    prefix: char,
+    script_code: u16,
+    font: &Font,
+    size: f32,
+    ids: &BTreeSet<u32>,
+    max_font_bytes: &mut usize,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let assets = rasterize_used_glyphs(font, size, ids.iter().copied())?;
+    let vfnt = build_vfnt(script_code, size, &assets)?;
+    validate_vfnt(&vfnt)?;
+    if vfnt.len() > MAX_FONT_BYTES {
+        return Err(format!(
+            "page-local font for page {page_index} is {} bytes; firmware limit is {MAX_FONT_BYTES}",
+            vfnt.len()
+        ));
+    }
+    *max_font_bytes = (*max_font_bytes).max(vfnt.len());
+    let file_name = page_local_file_name(prefix, page_index, "VFN")?;
+    fs::write(cache_dir.join(&file_name), &vfnt)
+        .map_err(|err| format!("write {file_name}: {err}"))?;
+    Ok(())
+}
+
+fn page_local_file_name(prefix: char, page: usize, extension: &str) -> Result<String, String> {
+    if !prefix.is_ascii_alphanumeric()
+        || extension.len() != 3
+        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        || page >= PAGE_LOCAL_CAPACITY
+    {
+        return Err("invalid page-local cache file name".to_string());
+    }
+    let mut value = page;
+    let mut digits = [b'0'; PAGE_LOCAL_DIGITS];
+    for slot in digits.iter_mut().rev() {
+        let digit = (value % 36) as u8;
+        *slot = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'A' + (digit - 10)
+        };
+        value /= 36;
+    }
+    let stem =
+        String::from_utf8(digits.to_vec()).map_err(|_| "base36 encode failed".to_string())?;
+    Ok(format!("{prefix}{stem}.{extension}"))
+}
+
+fn meta_value(value: &str) -> String {
+    value.replace('\r', " ").replace('\n', " ")
+}
+
+fn remove_dir_if_present(path: &Path, context: &str) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|err| format!("{context}: {err}"))?;
+    }
+    Ok(())
+}
+
+fn replace_cache_directory(staged: &Path, final_dir: &Path, backup: &Path) -> Result<(), String> {
+    let had_previous = final_dir.exists();
+    if had_previous {
+        fs::rename(final_dir, backup)
+            .map_err(|err| format!("move previous cache to backup: {err}"))?;
+    }
+    match fs::rename(staged, final_dir) {
+        Ok(()) => {
+            remove_dir_if_present(backup, "remove replaced cache backup")?;
+            Ok(())
+        }
+        Err(err) => {
+            if had_previous && backup.exists() {
+                let _ = fs::rename(backup, final_dir);
+            }
+            Err(format!("activate staged cache: {err}"))
+        }
+    }
 }
 
 fn build_vfnt(script_code: u16, pixel_size: f32, glyphs: &[GlyphAsset]) -> Result<Vec<u8>, String> {
@@ -529,12 +941,14 @@ fn validate_page_references(
     page: &PreparedPage,
     latin_ids: &BTreeSet<u32>,
     devanagari_ids: &BTreeSet<u32>,
+    gujarati_ids: &BTreeSet<u32>,
 ) -> Result<(), String> {
     for glyph in &page.glyphs {
         match glyph.font_id {
             FONT_LATIN if latin_ids.contains(&glyph.glyph_id) => {}
             FONT_DEVANAGARI if devanagari_ids.contains(&glyph.glyph_id) => {}
-            FONT_LATIN | FONT_DEVANAGARI => {
+            FONT_GUJARATI if gujarati_ids.contains(&glyph.glyph_id) => {}
+            FONT_LATIN | FONT_DEVANAGARI | FONT_GUJARATI => {
                 return Err(format!("VRN references missing glyph {}", glyph.glyph_id));
             }
             _ => {
@@ -578,6 +992,7 @@ fn validate_vfnt(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn vfnt_glyph_ids(data: &[u8]) -> Result<BTreeSet<u32>, String> {
     validate_vfnt(data)?;
     let count = read_u32(data, 20)? as usize;
@@ -645,10 +1060,12 @@ fn parse_args() -> Result<Args, String> {
         device_path: required_string(&values, "--device-path")?,
         latin_font: required_path(&values, "--latin-font")?,
         devanagari_font: required_path(&values, "--devanagari-font")?,
+        gujarati_font: optional_path(&values, "--gujarati-font"),
         out: required_path(&values, "--out")?,
         title,
         latin_size: optional_f32(&values, "--latin-size", 18.0)?,
         devanagari_size: optional_f32(&values, "--devanagari-size", 22.0)?,
+        gujarati_size: optional_f32(&values, "--gujarati-size", 22.0)?,
         line_height: optional_i16(&values, "--line-height")?,
         page_width: optional_i16(&values, "--page-width")?.unwrap_or(464),
         page_height: optional_i16(&values, "--page-height")?.unwrap_or(730),
@@ -658,11 +1075,15 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn usage() -> String {
-    "usage: prepared-txt-real-vfnt --book <TXT> --device-path <PATH> --latin-font <TTF> --devanagari-font <TTF> --out <FCACHE>".to_string()
+    "usage: prepared-txt-real-vfnt --book <TXT> --device-path <PATH> --latin-font <TTF> --devanagari-font <TTF> [--gujarati-font <TTF>] --out <FCACHE>".to_string()
 }
 
 fn required_path(values: &BTreeMap<String, String>, key: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(required_string(values, key)?))
+}
+
+fn optional_path(values: &BTreeMap<String, String>, key: &str) -> Option<PathBuf> {
+    values.get(key).map(|value| PathBuf::from(value.as_str()))
 }
 
 fn required_string(values: &BTreeMap<String, String>, key: &str) -> Result<String, String> {
@@ -739,6 +1160,26 @@ mod tests {
     }
 
     #[test]
+    fn splits_devanagari_and_gujarati_runs() {
+        let runs = split_script_runs("नमः ગુજરાતી");
+        assert!(runs.iter().any(|run| run.script == ScriptKind::Devanagari));
+        assert!(runs.iter().any(|run| run.script == ScriptKind::Gujarati));
+    }
+
+    #[test]
+    fn classifies_vedic_marks_as_devanagari() {
+        assert_eq!(script_for_char('\u{1CD0}'), ScriptKind::Devanagari);
+        assert_eq!(script_for_char('\u{A8E0}'), ScriptKind::Devanagari);
+    }
+
+    #[test]
+    fn generates_page_local_fat_83_names() {
+        assert_eq!(page_local_file_name('P', 0, "VRN").unwrap(), "P00000.VRN");
+        assert_eq!(page_local_file_name('D', 35, "VFN").unwrap(), "D0000Z.VFN");
+        assert_eq!(page_local_file_name('G', 36, "VFN").unwrap(), "G00010.VFN");
+    }
+
+    #[test]
     fn generated_vfnt_contains_non_empty_bitmap() {
         let glyph = GlyphAsset {
             glyph_id: 42,
@@ -754,6 +1195,48 @@ mod tests {
         validate_vfnt(&data).unwrap();
         assert!(vfnt_glyph_ids(&data).unwrap().contains(&42));
         assert!(data.ends_with(&[0b1110_0000, 0b1010_0000]));
+    }
+
+    #[test]
+    fn page_budget_splits_before_firmware_glyph_limit() {
+        let resource = GlyphResource {
+            font_id: FONT_LATIN,
+            glyph_id: 1,
+            bitmap_bytes: 1,
+        };
+        let mut budget = PageBudget::default();
+        for _ in 0..MAX_PAGE_GLYPHS {
+            assert!(budget.add(&[resource]).unwrap());
+        }
+        assert!(!budget.add(&[resource]).unwrap());
+        assert_eq!(budget.glyph_count, MAX_PAGE_GLYPHS);
+    }
+
+    #[test]
+    fn page_budget_counts_repeated_bitmap_once() {
+        let resource = GlyphResource {
+            font_id: FONT_DEVANAGARI,
+            glyph_id: 42,
+            bitmap_bytes: 9,
+        };
+        let mut budget = PageBudget::default();
+        assert!(budget.add(&[resource]).unwrap());
+        let font_bytes = budget.font_bytes[1];
+        assert!(budget.add(&[resource]).unwrap());
+        assert_eq!(budget.font_bytes[1], font_bytes);
+        assert_eq!(budget.glyph_count, 2);
+    }
+
+    #[test]
+    fn page_budget_rejects_page_local_font_overflow() {
+        let resource = GlyphResource {
+            font_id: FONT_GUJARATI,
+            glyph_id: 7,
+            bitmap_bytes: MAX_FONT_BYTES,
+        };
+        let mut budget = PageBudget::default();
+        assert!(!budget.add(&[resource]).unwrap());
+        assert_eq!(budget.glyph_count, 0);
     }
 
     #[test]

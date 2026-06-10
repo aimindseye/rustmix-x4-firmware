@@ -1,0 +1,5 @@
+README.md
+SCREENSHOTS.md
+screenshots/epub-gujarati-ramayana.jpg
+screenshots/epub-hindi-bhagavat.jpg
+screenshots/epub-hindi-garud-purana.jpg
