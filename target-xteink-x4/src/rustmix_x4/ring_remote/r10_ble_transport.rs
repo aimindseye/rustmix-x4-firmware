@@ -190,6 +190,59 @@ pub enum R10BleGattOperation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattWritePayload {
+    Cccd([u8; 2]),
+    RemoteCommand([u8; 16]),
+}
+
+impl R10BleGattWritePayload {
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Cccd(value) => value,
+            Self::RemoteCommand(value) => value,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        match self {
+            Self::Cccd(_) => 2,
+            Self::RemoteCommand(_) => 16,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleGattWrite {
+    pub handle: u16,
+    pub payload: R10BleGattWritePayload,
+}
+
+impl R10BleGattWrite {
+    pub fn payload(&self) -> &[u8] {
+        self.payload.as_slice()
+    }
+
+    pub const fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+}
+
+impl R10BleGattOperation {
+    pub fn to_write(self) -> R10BleGattWrite {
+        match self {
+            Self::WriteCccd { handle, value } => R10BleGattWrite {
+                handle,
+                payload: R10BleGattWritePayload::Cccd(value),
+            },
+            Self::WriteRemoteCommand { handle, command } => R10BleGattWrite {
+                handle,
+                payload: R10BleGattWritePayload::RemoteCommand(*command.packet()),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleCommand {
     StartRemote,
     PollRemote,
@@ -282,6 +335,69 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_cccd_operation_serializes_to_write_payload() {
+        let op = R10BleGattOperation::WriteCccd {
+            handle: 6,
+            value: R10_BLE_NOTIFY_CCCD_ENABLE,
+        };
+        let write = op.to_write();
+
+        assert_eq!(write.handle, 6);
+        assert_eq!(write.payload_len(), 2);
+        assert_eq!(write.payload(), &[0x01, 0x00]);
+    }
+
+    #[test]
+    fn r10_ble_gatt_remote_command_operation_serializes_to_stock_packet() {
+        let op = R10BleGattOperation::WriteRemoteCommand {
+            handle: 3,
+            command: R10BleCommand::StartRemote,
+        };
+        let write = op.to_write();
+
+        assert_eq!(write.handle, 3);
+        assert_eq!(write.payload_len(), 16);
+        assert_eq!(
+            write.payload(),
+            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_startup_operations_serialize_in_execution_order() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let ops = handles.startup_operations().unwrap();
+        let writes = [ops[0].to_write(), ops[1].to_write()];
+
+        assert_eq!(writes[0].handle, 6);
+        assert_eq!(writes[0].payload(), &[0x01, 0x00]);
+        assert_eq!(writes[1].handle, 3);
+        assert_eq!(
+            writes[1].payload(),
+            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_poll_and_stop_operations_serialize_to_known_packets() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        let poll = handles.poll_remote_operation().unwrap().to_write();
+        assert_eq!(poll.handle, 3);
+        assert_eq!(
+            poll.payload(),
+            &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+        );
+
+        let stop = handles.stop_remote_operation().unwrap().to_write();
+        assert_eq!(stop.handle, 3);
+        assert_eq!(
+            stop.payload(),
+            &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+        );
+    }
 
     #[test]
     fn r10_ble_gatt_operations_require_resolved_handles() {
