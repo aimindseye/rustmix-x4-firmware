@@ -6,6 +6,14 @@ license = { workspace = true }
 authors = { workspace = true }
 
 [features]
+r10-ble-host = [
+    "esp-radio/ble",
+    "esp-radio/unstable",
+    "dep:bt-hci", "bt-hci/embassy-time",
+    "dep:trouble-host", "trouble-host/central",
+    "trouble-host/gatt",
+]
+
 default = []
 lua-vm = ["dep:rustmix-lua-vm"]
 lua-runtime-probe = []
@@ -40,6 +48,8 @@ critical-section = "1.2.0"
 embassy-net = { version = "0.8", features = ["dhcpv4", "dns", "medium-ethernet", "tcp", "udp"] }
 embedded-io-async = "0.7"
 esp-radio = { version = "0.17", default-features = false, features = ["esp32c3", "wifi", "log-04", "esp-alloc"] }
+bt-hci = { version = "0.9.0", default-features = false, optional = true }
+trouble-host = { version = "0.7.0", default-features = false, features = ["central", "gatt"], optional = true }
 
 [build-dependencies]
 fontdue = "0.9"
