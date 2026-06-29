@@ -652,6 +652,7 @@ pub enum R10BleRuntimeEffect {
     WriteResult(R10BleWriteResult),
     PendingWrite(R10BlePendingWrite),
     PendingWrites([R10BlePendingWrite; 2]),
+    PendingStartupWrites([R10BlePendingWrite; 3]),
     Discovery(R10BleGattDiscoveryStatus),
     Write(R10BleGattWrite),
     Writes([R10BleGattWrite; 2]),
@@ -790,6 +791,34 @@ impl R10BleRemoteRuntime {
             .unwrap_or(R10BleRuntimeEffect::None)
     }
 
+    pub fn startup_pending_writes(&mut self) -> Option<[R10BlePendingWrite; 3]> {
+        let subscribe = self.begin_subscribe()?;
+        self.complete_subscribe();
+
+        let startup = self.begin_remote_start()?;
+
+        Some([
+            R10BlePendingWrite::new(R10BleWritePhase::Subscribe, subscribe),
+            R10BlePendingWrite::new(R10BleWritePhase::RemoteStart, startup[0]),
+            R10BlePendingWrite::new(R10BleWritePhase::RemoteStart, startup[1]),
+        ])
+    }
+
+    pub fn startup_pending_writes_effect(&mut self) -> R10BleRuntimeEffect {
+        self.startup_pending_writes()
+            .map(R10BleRuntimeEffect::PendingStartupWrites)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn shutdown_pending_writes(&mut self) -> Option<[R10BlePendingWrite; 2]> {
+        self.begin_remote_shutdown().map(|writes| {
+            [
+                R10BlePendingWrite::new(R10BleWritePhase::Shutdown, writes[0]),
+                R10BlePendingWrite::new(R10BleWritePhase::Shutdown, writes[1]),
+            ]
+        })
+    }
+
     pub fn shutdown_pending_writes_effect(&mut self) -> R10BleRuntimeEffect {
         self.begin_remote_shutdown()
             .map(|writes| {
@@ -905,6 +934,82 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_runtime_startup_pending_writes_queue_subscribe_then_start() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        let writes = runtime.startup_pending_writes().unwrap();
+
+        assert_eq!(runtime.session.state, R10BleTransportState::StartingRemote);
+
+        assert_eq!(writes[0].phase, R10BleWritePhase::Subscribe);
+        assert_eq!(writes[0].handle(), 6);
+        assert_eq!(writes[0].payload(), &[0x01, 0x00]);
+
+        assert_eq!(writes[1].phase, R10BleWritePhase::RemoteStart);
+        assert_eq!(writes[1].handle(), 6);
+        assert_eq!(writes[1].payload(), &[0x01, 0x00]);
+
+        assert_eq!(writes[2].phase, R10BleWritePhase::RemoteStart);
+        assert_eq!(writes[2].handle(), 3);
+        assert_eq!(
+            writes[2].payload(),
+            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_startup_pending_writes_effect_emits_three_step_queue() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        match runtime.startup_pending_writes_effect() {
+            R10BleRuntimeEffect::PendingStartupWrites(writes) => {
+                assert_eq!(writes[0].phase, R10BleWritePhase::Subscribe);
+                assert_eq!(writes[1].phase, R10BleWritePhase::RemoteStart);
+                assert_eq!(writes[2].phase, R10BleWritePhase::RemoteStart);
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r10_ble_runtime_startup_pending_writes_stays_none_until_handles_complete() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles {
+            notify_cccd_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+
+        assert_eq!(runtime.startup_pending_writes(), None);
+        assert_eq!(
+            runtime.startup_pending_writes_effect(),
+            R10BleRuntimeEffect::None
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Idle);
+    }
+
+    #[test]
+    fn r10_ble_runtime_shutdown_pending_writes_helper_matches_effect_queue() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        let writes = runtime.shutdown_pending_writes().unwrap();
+
+        assert_eq!(runtime.session.state, R10BleTransportState::Disconnecting);
+        assert_eq!(writes[0].phase, R10BleWritePhase::Shutdown);
+        assert_eq!(writes[0].handle(), 3);
+        assert_eq!(
+            writes[0].payload(),
+            &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+        );
+        assert_eq!(writes[1].phase, R10BleWritePhase::Shutdown);
+        assert_eq!(writes[1].handle(), 6);
+        assert_eq!(writes[1].payload(), &[0x00, 0x00]);
+    }
 
     #[test]
     fn r10_ble_pending_write_exposes_phase_handle_payload_and_mode() {
