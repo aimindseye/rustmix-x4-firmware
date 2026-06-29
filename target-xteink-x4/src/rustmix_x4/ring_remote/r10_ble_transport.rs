@@ -18,6 +18,67 @@ pub const R10_BLE_RECONNECT_BACKOFF_MS: u64 = 3_000;
 pub const R10_BLE_NOTIFY_CCCD_ENABLE: [u8; 2] = [0x01, 0x00];
 pub const R10_BLE_NOTIFY_CCCD_DISABLE: [u8; 2] = [0x00, 0x00];
 
+pub const R10_BLE_DEFAULT_TARGET_ADDRESS: &str = "31:39:46:36:E5:05";
+pub const R10_BLE_DEFAULT_ADVERTISED_NAME: &str = "COLMI R10_E505";
+pub const R10_BLE_DEFAULT_NAME_PREFIX: &str = "COLMI R10";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleAdvertisedDevice<'a> {
+    pub address: Option<&'a str>,
+    pub name: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleScanTarget {
+    pub address: Option<&'static str>,
+    pub name_prefix: Option<&'static str>,
+}
+
+impl R10BleScanTarget {
+    pub const fn default_r10() -> Self {
+        Self {
+            address: Some(R10_BLE_DEFAULT_TARGET_ADDRESS),
+            name_prefix: Some(R10_BLE_DEFAULT_NAME_PREFIX),
+        }
+    }
+
+    pub const fn any_colmi_r10() -> Self {
+        Self {
+            address: None,
+            name_prefix: Some(R10_BLE_DEFAULT_NAME_PREFIX),
+        }
+    }
+
+    pub fn scan_device(&self, device: R10BleAdvertisedDevice<'_>) -> R10BleScanDecision {
+        if let (Some(expected), Some(actual)) = (self.address, device.address) {
+            if expected.eq_ignore_ascii_case(actual) {
+                return R10BleScanDecision::MatchByAddress;
+            }
+        }
+
+        if let (Some(prefix), Some(name)) = (self.name_prefix, device.name) {
+            if name.starts_with(prefix) {
+                return R10BleScanDecision::MatchByNamePrefix;
+            }
+        }
+
+        R10BleScanDecision::Ignore
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleScanDecision {
+    Ignore,
+    MatchByAddress,
+    MatchByNamePrefix,
+}
+
+impl R10BleScanDecision {
+    pub const fn is_match(&self) -> bool {
+        matches!(self, Self::MatchByAddress | Self::MatchByNamePrefix)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleGattDiscoveryEvent {
     Service { start_handle: u16, end_handle: u16 },
@@ -541,6 +602,7 @@ impl R10BleRemoteSession {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleRuntimeEffect {
     None,
+    Scan(R10BleScanDecision),
     Discovery(R10BleGattDiscoveryStatus),
     Write(R10BleGattWrite),
     Writes([R10BleGattWrite; 2]),
@@ -637,6 +699,20 @@ impl R10BleRemoteRuntime {
         self.session.retry_after_backoff(now_ms)
     }
 
+    pub fn scan_device_effect(
+        &mut self,
+        target: R10BleScanTarget,
+        device: R10BleAdvertisedDevice<'_>,
+    ) -> R10BleRuntimeEffect {
+        let decision = target.scan_device(device);
+
+        if decision.is_match() {
+            self.session.begin_connect();
+        }
+
+        R10BleRuntimeEffect::Scan(decision)
+    }
+
     pub fn discovery_event_effect(
         &mut self,
         event: R10BleGattDiscoveryEvent,
@@ -702,6 +778,87 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_scan_target_matches_exact_default_address_case_insensitive() {
+        let target = R10BleScanTarget::default_r10();
+
+        assert_eq!(
+            target.scan_device(R10BleAdvertisedDevice {
+                address: Some("31:39:46:36:e5:05"),
+                name: Some("Unknown"),
+            }),
+            R10BleScanDecision::MatchByAddress
+        );
+    }
+
+    #[test]
+    fn r10_ble_scan_target_matches_colmi_r10_name_prefix() {
+        let target = R10BleScanTarget::any_colmi_r10();
+
+        assert_eq!(
+            target.scan_device(R10BleAdvertisedDevice {
+                address: Some("AA:BB:CC:DD:EE:FF"),
+                name: Some(R10_BLE_DEFAULT_ADVERTISED_NAME),
+            }),
+            R10BleScanDecision::MatchByNamePrefix
+        );
+    }
+
+    #[test]
+    fn r10_ble_scan_target_ignores_unrelated_device() {
+        let target = R10BleScanTarget::default_r10();
+
+        assert_eq!(
+            target.scan_device(R10BleAdvertisedDevice {
+                address: Some("AA:BB:CC:DD:EE:FF"),
+                name: Some("Keyboard"),
+            }),
+            R10BleScanDecision::Ignore
+        );
+    }
+
+    #[test]
+    fn r10_ble_scan_decision_match_flag_is_explicit() {
+        assert!(!R10BleScanDecision::Ignore.is_match());
+        assert!(R10BleScanDecision::MatchByAddress.is_match());
+        assert!(R10BleScanDecision::MatchByNamePrefix.is_match());
+    }
+
+    #[test]
+    fn r10_ble_runtime_scan_effect_moves_to_connecting_on_match() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+
+        assert_eq!(
+            runtime.scan_device_effect(
+                R10BleScanTarget::default_r10(),
+                R10BleAdvertisedDevice {
+                    address: Some(R10_BLE_DEFAULT_TARGET_ADDRESS),
+                    name: Some("Other"),
+                },
+            ),
+            R10BleRuntimeEffect::Scan(R10BleScanDecision::MatchByAddress)
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Connecting);
+    }
+
+    #[test]
+    fn r10_ble_runtime_scan_effect_keeps_scanning_on_ignore() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.session.begin_scan();
+
+        assert_eq!(
+            runtime.scan_device_effect(
+                R10BleScanTarget::default_r10(),
+                R10BleAdvertisedDevice {
+                    address: Some("AA:BB:CC:DD:EE:FF"),
+                    name: Some("Keyboard"),
+                },
+            ),
+            R10BleRuntimeEffect::Scan(R10BleScanDecision::Ignore)
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Scanning);
+    }
 
     #[test]
     fn r10_ble_runtime_effect_accumulates_discovery_until_ready() {
