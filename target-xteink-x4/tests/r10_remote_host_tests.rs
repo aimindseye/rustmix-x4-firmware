@@ -63,6 +63,13 @@ mod rustmix_x4 {
     }
 
     pub mod ring_remote {
+        pub mod r10_ble_probe {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/rustmix_x4/ring_remote/r10_ble_probe.rs"
+            ));
+        }
+
         pub mod r10_protocol {
             include!("../src/rustmix_x4/ring_remote/r10_protocol.rs");
         }
@@ -214,16 +221,18 @@ fn r10_host_ble_notify_motion_uses_existing_policy() {
 }
 
 mod r10_ble_on_device_probe_host_tests {
-    use super::rustmix_x4::ring_remote::{
+    use super::rustmix_x4::ring_remote::r10_ble_probe::{
+        R10_BLE_PROBE_STEPS, R10BleOnDeviceProbe, R10BleProbeConfig, R10BleProbeNotifyKind,
+        R10BleProbeReport, R10BleProbeStep, classify_accepted_packet, packet_checksum_ok,
+    };
+    use super::rustmix_x4::ring_remote::r10_ble_transport::{
         R10_BLE_DEFAULT_ADVERTISED_NAME, R10_BLE_DEFAULT_TARGET_ADDRESS,
         R10_BLE_LIVE_NOTIFY_CCCD_HANDLE, R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
         R10_BLE_LIVE_SERVICE_END_HANDLE, R10_BLE_LIVE_SERVICE_START_HANDLE,
-        R10_BLE_LIVE_WRITE_VALUE_HANDLE, R10_BLE_PROBE_STEPS, R10_VENDOR_STATUS_7301_PACKET,
-        R10BleAdvertisedDevice, R10BleConnectionResult, R10BleGattDiscoveryEvent,
-        R10BleGattDiscoveryStatus, R10BleGattHandles, R10BleOnDeviceProbe, R10BleProbeConfig,
-        R10BleProbeNotifyKind, R10BleProbeReport, R10BleProbeStep, R10BleRuntimeEffect,
-        R10BleScanDecision, R10BleTransportState, R10BleWritePhase, R10BleWriteResult,
-        classify_accepted_packet, packet_checksum_ok,
+        R10_BLE_LIVE_WRITE_VALUE_HANDLE, R10_VENDOR_STATUS_7301_PACKET, R10BleAdvertisedDevice,
+        R10BleConnectionResult, R10BleGattDiscoveryEvent, R10BleGattDiscoveryStatus,
+        R10BleGattHandles, R10BleRuntimeEffect, R10BleScanDecision, R10BleTransportState,
+        R10BleWritePhase, R10BleWriteResult,
     };
 
     const R10_NO_EVENT_PACKET: [u8; 16] = [0x02, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02];

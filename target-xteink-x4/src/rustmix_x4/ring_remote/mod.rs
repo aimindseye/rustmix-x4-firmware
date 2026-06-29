@@ -6,7 +6,7 @@
 
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
-mod r10_ble_probe;
+pub pub pub mod r10_ble_probe;
 pub mod r10_ble_transport;
 pub mod r10_input_bridge;
 pub mod r10_protocol;

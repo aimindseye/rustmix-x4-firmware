@@ -312,7 +312,7 @@ pub fn packet_checksum_ok(packet: &[u8; 16]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rustmix_x4::ring_remote::{
+    use super::super::r10_ble_transport::{
         R10_BLE_DEFAULT_ADVERTISED_NAME, R10_BLE_DEFAULT_TARGET_ADDRESS,
         R10_BLE_LIVE_NOTIFY_CCCD_HANDLE, R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
         R10_BLE_LIVE_SERVICE_END_HANDLE, R10_BLE_LIVE_SERVICE_START_HANDLE,
