@@ -9,7 +9,7 @@ authors = { workspace = true }
 r10-ble-host = [
     "esp-radio/ble",
     "esp-radio/unstable",
-    "dep:bt-hci", "bt-hci/embassy-time",
+    "dep:bt-hci",
     "dep:trouble-host", "trouble-host/central",
     "trouble-host/gatt",
 ]
@@ -48,8 +48,8 @@ critical-section = "1.2.0"
 embassy-net = { version = "0.8", features = ["dhcpv4", "dns", "medium-ethernet", "tcp", "udp"] }
 embedded-io-async = "0.7"
 esp-radio = { version = "0.17", default-features = false, features = ["esp32c3", "wifi", "log-04", "esp-alloc"] }
-bt-hci = { version = "0.9.0", default-features = false, optional = true }
-trouble-host = { version = "0.7.0", default-features = false, features = ["central", "gatt"], optional = true }
+bt-hci = { version = "0.6.0", default-features = false, optional = true }
+trouble-host = { version = "=0.5.0", default-features = false, features = ["central", "gatt"], optional = true }
 
 [build-dependencies]
 fontdue = "0.9"
