@@ -4,6 +4,8 @@
 //! BLE central transport is added later so the existing Reader/Wi-Fi/Sleep
 //! baseline stays protected while the R10 protocol is validated.
 
+#[cfg(feature = "r10-ble-host")]
+pub mod r10_ble_host;
 pub mod r10_ble_transport;
 pub mod r10_input_bridge;
 pub mod r10_protocol;
@@ -23,4 +25,10 @@ pub use r10_ble_transport::{
     R10_BLE_NOTIFY_UUID, R10_BLE_POLL_INTERVAL_MS, R10_BLE_RECONNECT_BACKOFF_MS,
     R10_BLE_SERVICE_UUID, R10_BLE_WRITE_UUID, R10BleCommand, R10BleRemoteSession,
     R10BleTransportState,
+};
+
+#[cfg(feature = "r10-ble-host")]
+pub use r10_ble_host::{
+    R10_BLE_HOST_STATUS, R10BleHostBuildStatus, r10_ble_host_contract_summary,
+    r10_ble_host_stack_probe_type_names,
 };
