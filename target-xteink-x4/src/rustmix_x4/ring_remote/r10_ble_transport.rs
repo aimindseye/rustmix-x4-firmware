@@ -18,6 +18,14 @@ pub const R10_BLE_RECONNECT_BACKOFF_MS: u64 = 3_000;
 pub const R10_BLE_NOTIFY_CCCD_ENABLE: [u8; 2] = [0x01, 0x00];
 pub const R10_BLE_NOTIFY_CCCD_DISABLE: [u8; 2] = [0x00, 0x00];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattDiscoveryEvent {
+    Service { start_handle: u16, end_handle: u16 },
+    WriteCharacteristic { value_handle: u16 },
+    NotifyCharacteristic { value_handle: u16 },
+    NotifyCccd { handle: u16 },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct R10BleGattHandles {
     pub service_start_handle: Option<u16>,
@@ -52,6 +60,32 @@ impl R10BleGattHandles {
             notify_value_handle: Some(notify_value_handle),
             notify_cccd_handle: Some(notify_cccd_handle),
         }
+    }
+
+    pub fn apply_discovery_event(&mut self, event: R10BleGattDiscoveryEvent) {
+        match event {
+            R10BleGattDiscoveryEvent::Service {
+                start_handle,
+                end_handle,
+            } => {
+                self.service_start_handle = Some(start_handle);
+                self.service_end_handle = Some(end_handle);
+            }
+            R10BleGattDiscoveryEvent::WriteCharacteristic { value_handle } => {
+                self.write_value_handle = Some(value_handle);
+            }
+            R10BleGattDiscoveryEvent::NotifyCharacteristic { value_handle } => {
+                self.notify_value_handle = Some(value_handle);
+            }
+            R10BleGattDiscoveryEvent::NotifyCccd { handle } => {
+                self.notify_cccd_handle = Some(handle);
+            }
+        }
+    }
+
+    pub fn with_discovery_event(mut self, event: R10BleGattDiscoveryEvent) -> Self {
+        self.apply_discovery_event(event);
+        self
     }
 
     pub fn service_range_valid(&self) -> bool {
@@ -191,6 +225,64 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_discovery_events_accumulate_complete_handles() {
+        let mut handles = R10BleGattHandles::unresolved();
+
+        handles.apply_discovery_event(R10BleGattDiscoveryEvent::Service {
+            start_handle: 1,
+            end_handle: 8,
+        });
+        handles.apply_discovery_event(R10BleGattDiscoveryEvent::WriteCharacteristic {
+            value_handle: 3,
+        });
+        handles.apply_discovery_event(R10BleGattDiscoveryEvent::NotifyCharacteristic {
+            value_handle: 5,
+        });
+        handles.apply_discovery_event(R10BleGattDiscoveryEvent::NotifyCccd { handle: 6 });
+
+        assert_eq!(handles, R10BleGattHandles::new(1, 8, 3, 5, 6));
+        assert!(handles.can_start_remote_mode());
+    }
+
+    #[test]
+    fn r10_ble_gatt_discovery_event_builder_keeps_incomplete_state_safe() {
+        let handles = R10BleGattHandles::unresolved()
+            .with_discovery_event(R10BleGattDiscoveryEvent::Service {
+                start_handle: 1,
+                end_handle: 8,
+            })
+            .with_discovery_event(R10BleGattDiscoveryEvent::WriteCharacteristic {
+                value_handle: 3,
+            });
+
+        assert!(handles.service_range_valid());
+        assert!(handles.write_handle_ready());
+        assert!(!handles.notify_handle_ready());
+        assert!(!handles.notify_cccd_ready());
+        assert!(!handles.is_complete());
+        assert!(!handles.can_start_remote_mode());
+    }
+
+    #[test]
+    fn r10_ble_gatt_discovery_rejects_handles_outside_service_range() {
+        let handles = R10BleGattHandles::unresolved()
+            .with_discovery_event(R10BleGattDiscoveryEvent::Service {
+                start_handle: 10,
+                end_handle: 20,
+            })
+            .with_discovery_event(R10BleGattDiscoveryEvent::WriteCharacteristic { value_handle: 3 })
+            .with_discovery_event(R10BleGattDiscoveryEvent::NotifyCharacteristic {
+                value_handle: 15,
+            })
+            .with_discovery_event(R10BleGattDiscoveryEvent::NotifyCccd { handle: 16 });
+
+        assert!(!handles.write_handle_ready());
+        assert!(handles.notify_handle_ready());
+        assert!(handles.notify_cccd_ready());
+        assert!(!handles.is_complete());
+    }
 
     #[test]
     fn r10_ble_gatt_handles_start_unresolved() {
