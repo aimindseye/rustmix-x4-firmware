@@ -538,6 +538,96 @@ impl R10BleRemoteSession {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleRemoteRuntime {
+    pub session: R10BleRemoteSession,
+    pub handles: R10BleGattHandles,
+}
+
+impl R10BleRemoteRuntime {
+    pub const fn disabled() -> Self {
+        Self {
+            session: R10BleRemoteSession::disabled(),
+            handles: R10BleGattHandles::unresolved(),
+        }
+    }
+
+    pub const fn reader_remote(debounce_ms: u64) -> Self {
+        Self {
+            session: R10BleRemoteSession::reader_remote(debounce_ms),
+            handles: R10BleGattHandles::unresolved(),
+        }
+    }
+
+    pub fn reset_handles(&mut self) {
+        self.handles = R10BleGattHandles::unresolved();
+    }
+
+    pub fn apply_discovery_event(
+        &mut self,
+        event: R10BleGattDiscoveryEvent,
+    ) -> R10BleGattDiscoveryStatus {
+        self.handles.apply_discovery_event(event);
+        self.handles.discovery_status()
+    }
+
+    pub fn complete_discovery(&mut self) -> R10BleGattDiscoveryStatus {
+        self.session.complete_discovery(self.handles)
+    }
+
+    pub fn begin_subscribe(&mut self) -> Option<R10BleGattWrite> {
+        self.session.begin_subscribe(&self.handles)
+    }
+
+    pub fn complete_subscribe(&mut self) {
+        self.session.complete_subscribe();
+    }
+
+    pub fn begin_remote_start(&mut self) -> Option<[R10BleGattWrite; 2]> {
+        self.session.begin_remote_start(&self.handles)
+    }
+
+    pub fn complete_remote_start(&mut self, now_ms: u64) {
+        self.session.complete_remote_start(now_ms);
+    }
+
+    pub fn poll_due_write(&mut self, now_ms: u64) -> Option<R10BleGattWrite> {
+        self.session.poll_due_write(&self.handles, now_ms)
+    }
+
+    pub fn on_gatt_notify(
+        &mut self,
+        handle: u16,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> R10BleGattNotifyPolicyResult {
+        self.session
+            .on_gatt_notify(&self.handles, handle, payload, now_ms)
+    }
+
+    pub fn on_gatt_notify_enqueue(&mut self, handle: u16, payload: &[u8], now_ms: u64) -> bool {
+        self.session
+            .on_gatt_notify_enqueue(&self.handles, handle, payload, now_ms)
+    }
+
+    pub fn begin_remote_shutdown(&mut self) -> Option<[R10BleGattWrite; 2]> {
+        self.session.begin_remote_shutdown(&self.handles)
+    }
+
+    pub fn complete_remote_shutdown(&mut self) {
+        self.session.complete_remote_shutdown();
+    }
+
+    pub fn disconnect_and_backoff(&mut self, now_ms: u64) {
+        self.reset_handles();
+        self.session.enter_backoff(now_ms);
+    }
+
+    pub fn retry_after_backoff(&mut self, now_ms: u64) -> bool {
+        self.session.retry_after_backoff(now_ms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +635,118 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_runtime_reader_remote_starts_idle_with_unresolved_handles() {
+        let runtime = R10BleRemoteRuntime::reader_remote(3500);
+
+        assert_eq!(runtime.session.state, R10BleTransportState::Idle);
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+    }
+
+    #[test]
+    fn r10_ble_runtime_accumulates_discovery_and_completes_ready_state() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+
+        runtime.session.begin_discovery();
+        assert_eq!(
+            runtime.apply_discovery_event(R10BleGattDiscoveryEvent::Service {
+                start_handle: 1,
+                end_handle: 8,
+            }),
+            R10BleGattDiscoveryStatus::Incomplete(runtime.handles)
+        );
+        runtime.apply_discovery_event(R10BleGattDiscoveryEvent::WriteCharacteristic {
+            value_handle: 3,
+        });
+        runtime.apply_discovery_event(R10BleGattDiscoveryEvent::NotifyCharacteristic {
+            value_handle: 5,
+        });
+        let status =
+            runtime.apply_discovery_event(R10BleGattDiscoveryEvent::NotifyCccd { handle: 6 });
+
+        assert_eq!(status, R10BleGattDiscoveryStatus::Ready(runtime.handles));
+        assert_eq!(runtime.complete_discovery(), status);
+        assert_eq!(runtime.session.state, R10BleTransportState::Subscribing);
+    }
+
+    #[test]
+    fn r10_ble_runtime_plans_subscribe_start_and_poll_from_stored_handles() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        let subscribe = runtime.begin_subscribe().unwrap();
+        assert_eq!(subscribe.handle, 6);
+        assert_eq!(subscribe.payload(), &[0x01, 0x00]);
+        assert_eq!(runtime.session.state, R10BleTransportState::Subscribing);
+
+        runtime.complete_subscribe();
+        let startup = runtime.begin_remote_start().unwrap();
+        assert_eq!(startup[0].payload(), &[0x01, 0x00]);
+        assert_eq!(
+            startup[1].payload(),
+            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+        );
+
+        runtime.complete_remote_start(10_000);
+        let poll = runtime.poll_due_write(10_000).unwrap();
+        assert_eq!(poll.handle, 3);
+        assert_eq!(
+            poll.payload(),
+            &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_routes_notify_through_stored_handles() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            runtime.on_gatt_notify(5, &MOTION, 10_000),
+            R10BleGattNotifyPolicyResult::Accepted(R10RemoteAction::Reader(
+                RustmixReaderAction::NextPage
+            ))
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_plans_shutdown_from_stored_handles() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        runtime.complete_remote_start(10_000);
+        let shutdown = runtime.begin_remote_shutdown().unwrap();
+
+        assert_eq!(runtime.session.state, R10BleTransportState::Disconnecting);
+        assert_eq!(
+            shutdown[0].payload(),
+            &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+        );
+        assert_eq!(shutdown[1].payload(), &[0x00, 0x00]);
+
+        runtime.complete_remote_shutdown();
+        assert_eq!(runtime.session.state, R10BleTransportState::Idle);
+        assert_eq!(runtime.session.next_poll_due_ms, 0);
+    }
+
+    #[test]
+    fn r10_ble_runtime_disconnect_clears_handles_and_retries_after_backoff() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        runtime.disconnect_and_backoff(10_000);
+
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+        assert_eq!(runtime.session.next_poll_due_ms, 13_000);
+        assert!(!runtime.retry_after_backoff(12_999));
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+
+        assert!(runtime.retry_after_backoff(13_000));
+        assert_eq!(runtime.session.state, R10BleTransportState::Scanning);
+        assert_eq!(runtime.session.next_poll_due_ms, 0);
+    }
 
     #[test]
     fn r10_ble_gatt_discovery_status_reports_ready_only_when_complete() {
