@@ -1058,6 +1058,143 @@ impl R10BleRemoteRuntime {
     }
 }
 
+pub const R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS: u64 = 3_500;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum R10BleRuntimeMode {
+    #[default]
+    Disabled,
+    ProbeOnly,
+    ReaderRemote,
+}
+
+impl R10BleRuntimeMode {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ProbeOnly => "probe_only",
+            Self::ReaderRemote => "reader_remote",
+        }
+    }
+
+    pub const fn ble_enabled(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub const fn allows_probe(&self) -> bool {
+        matches!(self, Self::ProbeOnly)
+    }
+
+    pub const fn allows_reader_remote(&self) -> bool {
+        matches!(self, Self::ReaderRemote)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum R10BleRuntimeStartDecision {
+    #[default]
+    StayDisabled,
+    StartProbe,
+    StartReaderRemote,
+}
+
+impl R10BleRuntimeStartDecision {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::StayDisabled => "stay_disabled",
+            Self::StartProbe => "start_probe",
+            Self::StartReaderRemote => "start_reader_remote",
+        }
+    }
+
+    pub const fn starts_ble(&self) -> bool {
+        !matches!(self, Self::StayDisabled)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleRuntimeConfig {
+    pub mode: R10BleRuntimeMode,
+    pub scan_target: R10BleScanTarget,
+    pub reader_debounce_ms: u64,
+}
+
+impl Default for R10BleRuntimeConfig {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+impl R10BleRuntimeConfig {
+    pub const fn disabled() -> Self {
+        Self {
+            mode: R10BleRuntimeMode::Disabled,
+            scan_target: R10BleScanTarget {
+                address: Some(R10_BLE_DEFAULT_TARGET_ADDRESS),
+                name_prefix: Some(R10_BLE_DEFAULT_NAME_PREFIX),
+            },
+            reader_debounce_ms: R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS,
+        }
+    }
+
+    pub const fn probe_only_live_r10() -> Self {
+        Self {
+            mode: R10BleRuntimeMode::ProbeOnly,
+            scan_target: R10BleScanTarget {
+                address: Some(R10_BLE_DEFAULT_TARGET_ADDRESS),
+                name_prefix: Some(R10_BLE_DEFAULT_NAME_PREFIX),
+            },
+            reader_debounce_ms: R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS,
+        }
+    }
+
+    pub const fn reader_remote_live_r10() -> Self {
+        Self {
+            mode: R10BleRuntimeMode::ReaderRemote,
+            scan_target: R10BleScanTarget {
+                address: Some(R10_BLE_DEFAULT_TARGET_ADDRESS),
+                name_prefix: Some(R10_BLE_DEFAULT_NAME_PREFIX),
+            },
+            reader_debounce_ms: R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS,
+        }
+    }
+
+    pub const fn with_mode(mut self, mode: R10BleRuntimeMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub const fn with_reader_debounce_ms(mut self, debounce_ms: u64) -> Self {
+        self.reader_debounce_ms = debounce_ms;
+        self
+    }
+
+    pub const fn with_scan_target(mut self, scan_target: R10BleScanTarget) -> Self {
+        self.scan_target = scan_target;
+        self
+    }
+
+    pub const fn ble_enabled(&self) -> bool {
+        self.mode.ble_enabled()
+    }
+
+    pub const fn allows_probe(&self) -> bool {
+        self.mode.allows_probe()
+    }
+
+    pub const fn allows_reader_remote(&self) -> bool {
+        self.mode.allows_reader_remote()
+    }
+
+    pub const fn start_decision(&self) -> R10BleRuntimeStartDecision {
+        match self.mode {
+            R10BleRuntimeMode::Disabled => R10BleRuntimeStartDecision::StayDisabled,
+            R10BleRuntimeMode::ProbeOnly => R10BleRuntimeStartDecision::StartProbe,
+            R10BleRuntimeMode::ReaderRemote => R10BleRuntimeStartDecision::StartReaderRemote,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2679,5 +2816,109 @@ mod tests {
         session.mark_poll_sent(10_000);
         assert!(!session.should_poll(10_999));
         assert!(session.should_poll(11_000));
+    }
+}
+
+#[cfg(test)]
+mod runtime_mode_config_tests {
+    use super::*;
+
+    #[test]
+    fn r10_ble_runtime_config_defaults_to_disabled() {
+        let config = R10BleRuntimeConfig::default();
+
+        assert_eq!(config.mode, R10BleRuntimeMode::Disabled);
+        assert!(!config.ble_enabled());
+        assert!(!config.allows_probe());
+        assert!(!config.allows_reader_remote());
+        assert_eq!(
+            config.start_decision(),
+            R10BleRuntimeStartDecision::StayDisabled
+        );
+        assert_eq!(
+            config.reader_debounce_ms,
+            R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_modes_have_stable_labels() {
+        assert_eq!(R10BleRuntimeMode::Disabled.as_str(), "disabled");
+        assert_eq!(R10BleRuntimeMode::ProbeOnly.as_str(), "probe_only");
+        assert_eq!(R10BleRuntimeMode::ReaderRemote.as_str(), "reader_remote");
+
+        assert_eq!(
+            R10BleRuntimeStartDecision::StayDisabled.as_str(),
+            "stay_disabled"
+        );
+        assert_eq!(
+            R10BleRuntimeStartDecision::StartProbe.as_str(),
+            "start_probe"
+        );
+        assert_eq!(
+            R10BleRuntimeStartDecision::StartReaderRemote.as_str(),
+            "start_reader_remote"
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_probe_only_starts_probe_but_not_reader_remote() {
+        let config = R10BleRuntimeConfig::probe_only_live_r10();
+
+        assert!(config.ble_enabled());
+        assert!(config.allows_probe());
+        assert!(!config.allows_reader_remote());
+        assert_eq!(
+            config.start_decision(),
+            R10BleRuntimeStartDecision::StartProbe
+        );
+        assert_eq!(
+            config.scan_target.address,
+            Some(R10_BLE_DEFAULT_TARGET_ADDRESS)
+        );
+        assert_eq!(
+            config.scan_target.name_prefix,
+            Some(R10_BLE_DEFAULT_NAME_PREFIX)
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_reader_remote_starts_reader_remote_but_not_probe() {
+        let config = R10BleRuntimeConfig::reader_remote_live_r10();
+
+        assert!(config.ble_enabled());
+        assert!(!config.allows_probe());
+        assert!(config.allows_reader_remote());
+        assert_eq!(
+            config.start_decision(),
+            R10BleRuntimeStartDecision::StartReaderRemote
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_config_preserves_explicit_target_and_debounce() {
+        let target = R10BleScanTarget {
+            address: Some("AA:BB:CC:DD:EE:FF"),
+            name_prefix: Some("COLMI R10"),
+        };
+        let config = R10BleRuntimeConfig::disabled()
+            .with_mode(R10BleRuntimeMode::ReaderRemote)
+            .with_scan_target(target)
+            .with_reader_debounce_ms(4_000);
+
+        assert_eq!(config.mode, R10BleRuntimeMode::ReaderRemote);
+        assert_eq!(config.scan_target, target);
+        assert_eq!(config.reader_debounce_ms, 4_000);
+        assert_eq!(
+            config.start_decision(),
+            R10BleRuntimeStartDecision::StartReaderRemote
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_start_decision_marks_only_active_modes_as_ble_starting() {
+        assert!(!R10BleRuntimeStartDecision::StayDisabled.starts_ble());
+        assert!(R10BleRuntimeStartDecision::StartProbe.starts_ble());
+        assert!(R10BleRuntimeStartDecision::StartReaderRemote.starts_ble());
     }
 }

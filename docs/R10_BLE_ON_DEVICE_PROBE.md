@@ -117,3 +117,27 @@ The formatter writes into any `core::fmt::Write`, so the BLE task can use a smal
 stack buffer, serial monitor adapter, or test `String` without allocating in the
 runtime path.
 
+
+## Runtime mode/config gate
+
+`R10BleRuntimeConfig` is the explicit runtime gate for BLE use.
+
+Modes:
+
+    Disabled
+    ProbeOnly
+    ReaderRemote
+
+Default behavior is `Disabled`, so BLE scan/connect must not start unless a
+runtime setting explicitly selects `ProbeOnly` or `ReaderRemote`.
+
+Start decisions:
+
+    StayDisabled
+    StartProbe
+    StartReaderRemote
+
+`ProbeOnly` is for the on-device connectivity probe. `ReaderRemote` is for the
+future Reader page-turn mode. This keeps diagnostic BLE behavior separate from
+normal Reader remote-control behavior.
+
