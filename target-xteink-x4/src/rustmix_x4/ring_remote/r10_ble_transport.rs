@@ -22,6 +22,15 @@ pub const R10_BLE_DEFAULT_TARGET_ADDRESS: &str = "31:39:46:36:E5:05";
 pub const R10_BLE_DEFAULT_ADVERTISED_NAME: &str = "COLMI R10_E505";
 pub const R10_BLE_DEFAULT_NAME_PREFIX: &str = "COLMI R10";
 
+pub const R10_BLE_LIVE_SERVICE_START_HANDLE: u16 = 14;
+pub const R10_BLE_LIVE_SERVICE_END_HANDLE: u16 = 19;
+pub const R10_BLE_LIVE_WRITE_VALUE_HANDLE: u16 = 15;
+pub const R10_BLE_LIVE_NOTIFY_VALUE_HANDLE: u16 = 17;
+pub const R10_BLE_LIVE_NOTIFY_CCCD_HANDLE: u16 = 19;
+
+pub const R10_VENDOR_STATUS_7301_PACKET: [u8; 16] =
+    [0x73, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x74];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleAdvertisedDevice<'a> {
     pub address: Option<&'a str>,
@@ -1056,6 +1065,56 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_live_probe_handles_form_complete_gatt_contract() {
+        let handles = R10BleGattHandles::new(
+            R10_BLE_LIVE_SERVICE_START_HANDLE,
+            R10_BLE_LIVE_SERVICE_END_HANDLE,
+            R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        );
+
+        assert!(handles.is_complete());
+        assert_eq!(handles.write_value_handle, Some(15));
+        assert_eq!(handles.notify_value_handle, Some(17));
+        assert_eq!(handles.notify_cccd_handle, Some(19));
+        assert!(handles.can_start_remote_mode());
+    }
+
+    #[test]
+    fn r10_ble_live_probe_vendor_status_packet_has_valid_checksum() {
+        assert_eq!(R10_VENDOR_STATUS_7301_PACKET.len(), 16);
+        assert_eq!(
+            R10_VENDOR_STATUS_7301_PACKET[15],
+            R10_VENDOR_STATUS_7301_PACKET[..15]
+                .iter()
+                .fold(0u8, |acc, byte| acc.wrapping_add(*byte))
+        );
+    }
+
+    #[test]
+    fn r10_ble_live_probe_vendor_status_packet_is_accepted_but_not_motion() {
+        let handles = R10BleGattHandles::new(
+            R10_BLE_LIVE_SERVICE_START_HANDLE,
+            R10_BLE_LIVE_SERVICE_END_HANDLE,
+            R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        );
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(
+            session.on_gatt_notify(
+                &handles,
+                R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+                &R10_VENDOR_STATUS_7301_PACKET,
+                10_000,
+            ),
+            R10BleGattNotifyPolicyResult::Accepted(R10RemoteAction::None)
+        );
+    }
 
     #[test]
     fn r10_ble_pending_write_queue_tracks_current_advance_and_remaining() {

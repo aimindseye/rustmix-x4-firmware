@@ -249,3 +249,38 @@ A successful full remote-mode test confirms the values needed by the ESP32-C3 fi
 - notify subscription works,
 - start/poll/stop packets are accepted,
 - motion notifications decode into the existing reader-next-page policy.
+
+
+## Live validation: COLMI R10_E505
+
+Validated with the known ring:
+
+    Address: 31:39:46:36:E5:05
+    Name: COLMI R10_E505
+
+Observed GATT layout:
+
+    Service 6e40fff0-b5a3-f393-e0a9-e50e24dcca9e handle=14
+      Notify 6e400003-b5a3-f393-e0a9-e50e24dcca9e handle=17 props=notify
+        CCCD 00002902-0000-1000-8000-00805f9b34fb handle=19
+      Write  6e400002-b5a3-f393-e0a9-e50e24dcca9e handle=15 props=write-without-response,write
+
+Validated runtime behavior:
+
+    Remote start write accepted: 02 04 ... 06
+    Remote poll write accepted:  02 05 ... 07
+    Remote stop write accepted:  02 06 ... 08
+    No-event notify:             02 00 ... 02
+    Motion notify:               02 02 ... 04
+
+A 30-second run produced:
+
+    notifications=37
+    motion=4
+
+Known valid-checksum vendor/status packet seen during the run:
+
+    73 01 00 00 00 00 00 00 00 00 00 00 00 00 00 74
+
+This packet is intentionally treated as accepted-but-ignored, not as a page-turn motion event.
+
