@@ -203,6 +203,34 @@ impl R10BleGattHandles {
             self.disable_notify_operation()?.to_write(),
         ])
     }
+
+    pub fn gate_notify(&self, handle: u16, payload: &[u8]) -> R10BleGattNotifyGate {
+        let expected = self.notify_value_handle;
+
+        if expected != Some(handle) {
+            return R10BleGattNotifyGate::WrongHandle {
+                expected,
+                actual: handle,
+            };
+        }
+
+        if payload.len() != 16 {
+            return R10BleGattNotifyGate::WrongLength {
+                actual: payload.len(),
+            };
+        }
+
+        let mut packet = [0u8; 16];
+        packet.copy_from_slice(payload);
+        R10BleGattNotifyGate::Accepted(packet)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattNotifyGate {
+    Accepted([u8; 16]),
+    WrongHandle { expected: Option<u16>, actual: u16 },
+    WrongLength { actual: usize },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,6 +398,55 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_notify_gate_accepts_matching_16_byte_notify() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            handles.gate_notify(5, &MOTION),
+            R10BleGattNotifyGate::Accepted(MOTION)
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_notify_gate_rejects_wrong_handle() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            handles.gate_notify(7, &MOTION),
+            R10BleGattNotifyGate::WrongHandle {
+                expected: Some(5),
+                actual: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_notify_gate_rejects_unresolved_notify_handle() {
+        let handles = R10BleGattHandles {
+            notify_value_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+
+        assert_eq!(
+            handles.gate_notify(5, &MOTION),
+            R10BleGattNotifyGate::WrongHandle {
+                expected: None,
+                actual: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_notify_gate_rejects_wrong_payload_length() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            handles.gate_notify(5, &[0x02, 0x02, 0x04]),
+            R10BleGattNotifyGate::WrongLength { actual: 3 }
+        );
+    }
 
     #[test]
     fn r10_ble_gatt_write_modes_separate_cccd_from_remote_commands() {
