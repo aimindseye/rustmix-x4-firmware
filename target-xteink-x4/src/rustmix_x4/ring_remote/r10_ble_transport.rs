@@ -607,10 +607,25 @@ pub enum R10BleConnectionResult {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleWritePhase {
+    Subscribe,
+    RemoteStart,
+    Poll,
+    Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleWriteResult {
+    Success(R10BleWritePhase),
+    Failed(R10BleWritePhase),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleRuntimeEffect {
     None,
     Scan(R10BleScanDecision),
     Connection(R10BleConnectionResult),
+    WriteResult(R10BleWriteResult),
     Discovery(R10BleGattDiscoveryStatus),
     Write(R10BleGattWrite),
     Writes([R10BleGattWrite; 2]),
@@ -723,6 +738,30 @@ impl R10BleRemoteRuntime {
         R10BleRuntimeEffect::Connection(R10BleConnectionResult::LinkLost)
     }
 
+    pub fn write_success_effect(
+        &mut self,
+        phase: R10BleWritePhase,
+        now_ms: u64,
+    ) -> R10BleRuntimeEffect {
+        match phase {
+            R10BleWritePhase::Subscribe => self.complete_subscribe(),
+            R10BleWritePhase::RemoteStart => self.complete_remote_start(now_ms),
+            R10BleWritePhase::Poll => {}
+            R10BleWritePhase::Shutdown => self.complete_remote_shutdown(),
+        }
+
+        R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Success(phase))
+    }
+
+    pub fn write_failed_effect(
+        &mut self,
+        phase: R10BleWritePhase,
+        now_ms: u64,
+    ) -> R10BleRuntimeEffect {
+        self.disconnect_and_backoff(now_ms);
+        R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Failed(phase))
+    }
+
     pub fn scan_device_effect(
         &mut self,
         target: R10BleScanTarget,
@@ -802,6 +841,92 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_runtime_write_success_subscribe_moves_to_starting_remote() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime
+            .session
+            .begin_subscribe(&R10BleGattHandles::new(1, 8, 3, 5, 6));
+
+        assert_eq!(
+            runtime.write_success_effect(R10BleWritePhase::Subscribe, 10_000),
+            R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Success(
+                R10BleWritePhase::Subscribe
+            ))
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::StartingRemote);
+    }
+
+    #[test]
+    fn r10_ble_runtime_write_success_remote_start_enters_polling() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime
+            .session
+            .begin_remote_start(&R10BleGattHandles::new(1, 8, 3, 5, 6));
+
+        assert_eq!(
+            runtime.write_success_effect(R10BleWritePhase::RemoteStart, 10_000),
+            R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Success(
+                R10BleWritePhase::RemoteStart
+            ))
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Polling);
+        assert_eq!(runtime.session.next_poll_due_ms, 10_000);
+    }
+
+    #[test]
+    fn r10_ble_runtime_write_success_poll_preserves_polling_state() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+        assert!(matches!(
+            runtime.poll_tick_effect(10_000),
+            R10BleRuntimeEffect::Write(_)
+        ));
+
+        assert_eq!(
+            runtime.write_success_effect(R10BleWritePhase::Poll, 10_001),
+            R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Success(R10BleWritePhase::Poll))
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Polling);
+        assert_eq!(runtime.session.next_poll_due_ms, 11_000);
+    }
+
+    #[test]
+    fn r10_ble_runtime_write_success_shutdown_returns_idle() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+        assert!(matches!(
+            runtime.shutdown_effect(),
+            R10BleRuntimeEffect::Writes(_)
+        ));
+
+        assert_eq!(
+            runtime.write_success_effect(R10BleWritePhase::Shutdown, 20_000),
+            R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Success(
+                R10BleWritePhase::Shutdown
+            ))
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Idle);
+        assert_eq!(runtime.session.next_poll_due_ms, 0);
+    }
+
+    #[test]
+    fn r10_ble_runtime_write_failure_clears_handles_and_enters_backoff() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        assert_eq!(
+            runtime.write_failed_effect(R10BleWritePhase::Poll, 20_000),
+            R10BleRuntimeEffect::WriteResult(R10BleWriteResult::Failed(R10BleWritePhase::Poll))
+        );
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+        assert_eq!(runtime.session.next_poll_due_ms, 23_000);
+    }
 
     #[test]
     fn r10_ble_runtime_connect_success_clears_handles_and_enters_discovery() {
