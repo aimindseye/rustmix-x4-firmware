@@ -600,9 +600,17 @@ impl R10BleRemoteSession {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleConnectionResult {
+    Connected,
+    ConnectFailed,
+    LinkLost,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleRuntimeEffect {
     None,
     Scan(R10BleScanDecision),
+    Connection(R10BleConnectionResult),
     Discovery(R10BleGattDiscoveryStatus),
     Write(R10BleGattWrite),
     Writes([R10BleGattWrite; 2]),
@@ -699,6 +707,22 @@ impl R10BleRemoteRuntime {
         self.session.retry_after_backoff(now_ms)
     }
 
+    pub fn connect_success_effect(&mut self) -> R10BleRuntimeEffect {
+        self.reset_handles();
+        self.session.begin_discovery();
+        R10BleRuntimeEffect::Connection(R10BleConnectionResult::Connected)
+    }
+
+    pub fn connect_failed_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        self.disconnect_and_backoff(now_ms);
+        R10BleRuntimeEffect::Connection(R10BleConnectionResult::ConnectFailed)
+    }
+
+    pub fn link_lost_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        self.disconnect_and_backoff(now_ms);
+        R10BleRuntimeEffect::Connection(R10BleConnectionResult::LinkLost)
+    }
+
     pub fn scan_device_effect(
         &mut self,
         target: R10BleScanTarget,
@@ -778,6 +802,69 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_runtime_connect_success_clears_handles_and_enters_discovery() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.session.begin_connect();
+
+        assert_eq!(
+            runtime.connect_success_effect(),
+            R10BleRuntimeEffect::Connection(R10BleConnectionResult::Connected)
+        );
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+        assert_eq!(runtime.session.state, R10BleTransportState::Discovering);
+    }
+
+    #[test]
+    fn r10_ble_runtime_connect_failed_clears_handles_and_enters_backoff() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.session.begin_connect();
+
+        assert_eq!(
+            runtime.connect_failed_effect(10_000),
+            R10BleRuntimeEffect::Connection(R10BleConnectionResult::ConnectFailed)
+        );
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+        assert_eq!(runtime.session.next_poll_due_ms, 13_000);
+    }
+
+    #[test]
+    fn r10_ble_runtime_link_lost_clears_handles_and_enters_backoff() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        assert_eq!(
+            runtime.link_lost_effect(20_000),
+            R10BleRuntimeEffect::Connection(R10BleConnectionResult::LinkLost)
+        );
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+        assert_eq!(runtime.session.next_poll_due_ms, 23_000);
+    }
+
+    #[test]
+    fn r10_ble_runtime_link_lost_retry_returns_to_scanning() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+
+        runtime.link_lost_effect(20_000);
+
+        assert_eq!(
+            runtime.backoff_tick_effect(22_999),
+            R10BleRuntimeEffect::None
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+
+        assert_eq!(
+            runtime.backoff_tick_effect(23_000),
+            R10BleRuntimeEffect::BackoffReady
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Scanning);
+    }
 
     #[test]
     fn r10_ble_scan_target_matches_exact_default_address_case_insensitive() {
