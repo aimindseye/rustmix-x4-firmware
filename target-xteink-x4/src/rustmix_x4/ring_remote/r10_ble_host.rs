@@ -44,6 +44,26 @@ pub fn r10_ble_host_stack_probe_type_names() -> (&'static str, &'static str, &'s
     )
 }
 
+#[cfg(feature = "r10-ble-host")]
+fn assert_ble_connector_transport<T>()
+where
+    T: bt_hci::transport::Transport,
+{
+}
+
+#[cfg(feature = "r10-ble-host")]
+pub fn r10_ble_host_trait_boundary_probe() -> (&'static str, &'static str, &'static str) {
+    assert_ble_connector_transport::<BleConnector<'static>>();
+
+    (
+        core::any::type_name::<BleConnector<'static>>(),
+        core::any::type_name::<
+            dyn bt_hci::transport::Transport<Error = esp_radio::ble::controller::BleConnectorError>,
+        >(),
+        core::any::type_name::<trouble_host::central::Central<'static, (), ()>>(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
