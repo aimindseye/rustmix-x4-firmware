@@ -1,0 +1,19 @@
+//! Ring remote support for Rustmix X4.
+//!
+//! r1 intentionally contains only transport-independent protocol and policy.
+//! BLE central transport is added later so the existing Reader/Wi-Fi/Sleep
+//! baseline stays protected while the R10 protocol is validated.
+
+pub mod r10_input_bridge;
+pub mod r10_protocol;
+pub mod r10_remote_policy;
+
+pub use r10_protocol::{
+    R10_PACKET_LEN, R10_REMOTE_POLL, R10_REMOTE_START, R10_REMOTE_STOP, R10RemotePacket,
+    R10RemotePacketKind,
+};
+pub use r10_remote_policy::{R10RemoteAction, R10RemoteDebounce, R10RemotePolicy, R10RemoteScreen};
+
+pub use r10_input_bridge::{
+    R10_NEXT_PAGE_BUTTON, R10_PREVIOUS_PAGE_BUTTON, R10InputInjection, try_enqueue_remote_action,
+};

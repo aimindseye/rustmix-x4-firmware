@@ -11,6 +11,7 @@ pub mod input;
 pub mod io;
 pub mod lua;
 pub mod physical;
+pub mod ring_remote;
 pub mod runtime_adapter_contracts;
 
 // Rustmix-owned progress state boundary.
