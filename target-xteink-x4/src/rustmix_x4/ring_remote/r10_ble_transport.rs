@@ -644,6 +644,97 @@ impl R10BlePendingWrite {
     }
 }
 
+pub const R10_BLE_PENDING_WRITE_QUEUE_CAPACITY: usize = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BlePendingWriteQueue {
+    writes: [Option<R10BlePendingWrite>; R10_BLE_PENDING_WRITE_QUEUE_CAPACITY],
+    len: usize,
+    cursor: usize,
+}
+
+impl R10BlePendingWriteQueue {
+    pub const fn empty() -> Self {
+        Self {
+            writes: [None, None, None],
+            len: 0,
+            cursor: 0,
+        }
+    }
+
+    pub fn from_one(write: R10BlePendingWrite) -> Self {
+        Self {
+            writes: [Some(write), None, None],
+            len: 1,
+            cursor: 0,
+        }
+    }
+
+    pub fn from_two(writes: [R10BlePendingWrite; 2]) -> Self {
+        Self {
+            writes: [Some(writes[0]), Some(writes[1]), None],
+            len: 2,
+            cursor: 0,
+        }
+    }
+
+    pub fn from_three(writes: [R10BlePendingWrite; 3]) -> Self {
+        Self {
+            writes: [Some(writes[0]), Some(writes[1]), Some(writes[2])],
+            len: 3,
+            cursor: 0,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub const fn is_done(&self) -> bool {
+        self.cursor >= self.len
+    }
+
+    pub const fn remaining_len(&self) -> usize {
+        if self.cursor >= self.len {
+            0
+        } else {
+            self.len - self.cursor
+        }
+    }
+
+    pub fn current(&self) -> Option<R10BlePendingWrite> {
+        if self.cursor < self.len {
+            self.writes[self.cursor]
+        } else {
+            None
+        }
+    }
+
+    pub fn pending_at(&self, index: usize) -> Option<R10BlePendingWrite> {
+        if index < self.len {
+            self.writes[index]
+        } else {
+            None
+        }
+    }
+
+    pub fn advance(&mut self) -> Option<R10BlePendingWrite> {
+        if self.cursor < self.len {
+            self.cursor += 1;
+        }
+
+        self.current()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleRuntimeEffect {
     None,
@@ -653,6 +744,7 @@ pub enum R10BleRuntimeEffect {
     PendingWrite(R10BlePendingWrite),
     PendingWrites([R10BlePendingWrite; 2]),
     PendingStartupWrites([R10BlePendingWrite; 3]),
+    PendingWriteQueue(R10BlePendingWriteQueue),
     Discovery(R10BleGattDiscoveryStatus),
     Write(R10BleGattWrite),
     Writes([R10BleGattWrite; 2]),
@@ -831,6 +923,36 @@ impl R10BleRemoteRuntime {
             .unwrap_or(R10BleRuntimeEffect::None)
     }
 
+    pub fn subscribe_pending_queue_effect(&mut self) -> R10BleRuntimeEffect {
+        self.begin_subscribe()
+            .map(|write| R10BlePendingWrite::new(R10BleWritePhase::Subscribe, write))
+            .map(R10BlePendingWriteQueue::from_one)
+            .map(R10BleRuntimeEffect::PendingWriteQueue)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn startup_pending_queue_effect(&mut self) -> R10BleRuntimeEffect {
+        self.startup_pending_writes()
+            .map(R10BlePendingWriteQueue::from_three)
+            .map(R10BleRuntimeEffect::PendingWriteQueue)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn poll_pending_queue_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        self.poll_due_write(now_ms)
+            .map(|write| R10BlePendingWrite::new(R10BleWritePhase::Poll, write))
+            .map(R10BlePendingWriteQueue::from_one)
+            .map(R10BleRuntimeEffect::PendingWriteQueue)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn shutdown_pending_queue_effect(&mut self) -> R10BleRuntimeEffect {
+        self.shutdown_pending_writes()
+            .map(R10BlePendingWriteQueue::from_two)
+            .map(R10BleRuntimeEffect::PendingWriteQueue)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
     pub fn write_success_effect(
         &mut self,
         phase: R10BleWritePhase,
@@ -934,6 +1056,151 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_pending_write_queue_tracks_current_advance_and_remaining() {
+        let pending = R10BlePendingWrite::new(
+            R10BleWritePhase::Subscribe,
+            R10BleGattWrite {
+                handle: 6,
+                payload: R10BleGattWritePayload::Cccd(R10_BLE_NOTIFY_CCCD_ENABLE),
+                mode: R10BleGattWriteMode::WithResponse,
+            },
+        );
+        let mut queue = R10BlePendingWriteQueue::from_one(pending);
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.cursor(), 0);
+        assert_eq!(queue.remaining_len(), 1);
+        assert_eq!(queue.current(), Some(pending));
+        assert_eq!(queue.advance(), None);
+        assert!(queue.is_done());
+        assert_eq!(queue.remaining_len(), 0);
+    }
+
+    #[test]
+    fn r10_ble_pending_write_queue_from_three_preserves_order() {
+        let writes = [
+            R10BlePendingWrite::new(
+                R10BleWritePhase::Subscribe,
+                R10BleGattHandles::new(1, 8, 3, 5, 6)
+                    .enable_notify_operation()
+                    .unwrap()
+                    .to_write(),
+            ),
+            R10BlePendingWrite::new(
+                R10BleWritePhase::RemoteStart,
+                R10BleGattHandles::new(1, 8, 3, 5, 6)
+                    .enable_notify_operation()
+                    .unwrap()
+                    .to_write(),
+            ),
+            R10BlePendingWrite::new(
+                R10BleWritePhase::RemoteStart,
+                R10BleGattHandles::new(1, 8, 3, 5, 6)
+                    .start_remote_operation()
+                    .unwrap()
+                    .to_write(),
+            ),
+        ];
+
+        let mut queue = R10BlePendingWriteQueue::from_three(writes);
+
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.current(), Some(writes[0]));
+        assert_eq!(queue.advance(), Some(writes[1]));
+        assert_eq!(queue.advance(), Some(writes[2]));
+        assert_eq!(queue.advance(), None);
+        assert!(queue.is_done());
+    }
+
+    #[test]
+    fn r10_ble_runtime_startup_pending_queue_effect_emits_cursor_queue() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        match runtime.startup_pending_queue_effect() {
+            R10BleRuntimeEffect::PendingWriteQueue(mut queue) => {
+                assert_eq!(queue.len(), 3);
+                assert_eq!(queue.current().unwrap().phase, R10BleWritePhase::Subscribe);
+                assert_eq!(
+                    queue.advance().unwrap().phase,
+                    R10BleWritePhase::RemoteStart
+                );
+                assert_eq!(
+                    queue.advance().unwrap().phase,
+                    R10BleWritePhase::RemoteStart
+                );
+                assert_eq!(queue.advance(), None);
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+
+        assert_eq!(runtime.session.state, R10BleTransportState::StartingRemote);
+    }
+
+    #[test]
+    fn r10_ble_runtime_subscribe_pending_queue_effect_emits_single_write_queue() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        match runtime.subscribe_pending_queue_effect() {
+            R10BleRuntimeEffect::PendingWriteQueue(queue) => {
+                assert_eq!(queue.len(), 1);
+                let current = queue.current().unwrap();
+                assert_eq!(current.phase, R10BleWritePhase::Subscribe);
+                assert_eq!(current.handle(), 6);
+                assert_eq!(current.payload(), &[0x01, 0x00]);
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r10_ble_runtime_poll_pending_queue_effect_emits_single_due_poll() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        match runtime.poll_pending_queue_effect(10_000) {
+            R10BleRuntimeEffect::PendingWriteQueue(queue) => {
+                assert_eq!(queue.len(), 1);
+                let current = queue.current().unwrap();
+                assert_eq!(current.phase, R10BleWritePhase::Poll);
+                assert_eq!(current.handle(), 3);
+                assert_eq!(
+                    current.payload(),
+                    &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+                );
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+
+        assert_eq!(
+            runtime.poll_pending_queue_effect(10_999),
+            R10BleRuntimeEffect::None
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_shutdown_pending_queue_effect_emits_stop_then_unsubscribe() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        match runtime.shutdown_pending_queue_effect() {
+            R10BleRuntimeEffect::PendingWriteQueue(mut queue) => {
+                assert_eq!(queue.len(), 2);
+                assert_eq!(queue.current().unwrap().phase, R10BleWritePhase::Shutdown);
+                assert_eq!(queue.current().unwrap().handle(), 3);
+                assert_eq!(queue.advance().unwrap().handle(), 6);
+                assert_eq!(queue.advance(), None);
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+
+        assert_eq!(runtime.session.state, R10BleTransportState::Disconnecting);
+    }
 
     #[test]
     fn r10_ble_runtime_startup_pending_writes_queue_subscribe_then_start() {
