@@ -95,3 +95,25 @@ Terminal outcomes:
 `Validated` means scan, connect, GATT discovery, notify subscription, remote start,
 and at least one notification all completed.
 
+
+## Probe log/report formatter
+
+`R10BleProbeLogFormatter` provides compact monitor-safe output for the future
+on-device BLE task.
+
+Summary line:
+
+    [r10-ble-probe] outcome=validated scan=1 connected=1 gatt=1 notify_sub=1 remote=1 stopped=0 polls=2 notify=3 no_event=1 motion=1 vendor7301=1 unknown=0 bad_checksum=0 wrong_handle=0 wrong_length=0
+
+Write failure line:
+
+    [r10-ble-probe] outcome=write_failed write_phase=remote_start ...
+
+Notify line:
+
+    [r10-ble-probe] notify kind=vendor_status_7301 total=3 motion=1 vendor7301=1 ignored_valid=1
+
+The formatter writes into any `core::fmt::Write`, so the BLE task can use a small
+stack buffer, serial monitor adapter, or test `String` without allocating in the
+runtime path.
+

@@ -24,9 +24,10 @@ pub use r10_input_bridge::{
 
 pub use r10_ble_probe::{
     R10_BLE_PROBE_DEFAULT_DEBOUNCE_MS, R10_BLE_PROBE_DEFAULT_DURATION_MS, R10_BLE_PROBE_STEPS,
-    R10BleOnDeviceProbe, R10BleProbeConfig, R10BleProbeEvent, R10BleProbeNotifyKind,
-    R10BleProbeOutcome, R10BleProbeReport, R10BleProbeRunResult, R10BleProbeRunner,
-    R10BleProbeStep, classify_accepted_packet, classify_notify, packet_checksum_ok,
+    R10BleOnDeviceProbe, R10BleProbeConfig, R10BleProbeEvent, R10BleProbeLogFormatter,
+    R10BleProbeNotifyKind, R10BleProbeOutcome, R10BleProbeReport, R10BleProbeRunResult,
+    R10BleProbeRunner, R10BleProbeStep, classify_accepted_packet, classify_notify,
+    packet_checksum_ok, r10_ble_write_phase_label,
 };
 
 pub use r10_ble_transport::{

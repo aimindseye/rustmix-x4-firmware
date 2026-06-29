@@ -5,6 +5,8 @@ use super::r10_ble_transport::{
     R10BleWritePhase, R10BleWriteResult,
 };
 
+use core::fmt;
+
 pub const R10_BLE_PROBE_DEFAULT_DURATION_MS: u64 = 30_000;
 pub const R10_BLE_PROBE_DEFAULT_DEBOUNCE_MS: u64 = 3_500;
 
@@ -65,6 +67,18 @@ pub enum R10BleProbeNotifyKind {
 }
 
 impl R10BleProbeNotifyKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoEvent => "no_event",
+            Self::Motion => "motion",
+            Self::VendorStatus7301 => "vendor_status_7301",
+            Self::UnknownValid => "unknown_valid",
+            Self::BadChecksum => "bad_checksum",
+            Self::WrongHandle => "wrong_handle",
+            Self::WrongLength => "wrong_length",
+        }
+    }
+
     pub const fn is_motion(&self) -> bool {
         matches!(self, Self::Motion)
     }
@@ -351,6 +365,17 @@ pub enum R10BleProbeOutcome {
 }
 
 impl R10BleProbeOutcome {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Validated => "validated",
+            Self::TimedOut => "timed_out",
+            Self::ConnectFailed => "connect_failed",
+            Self::LinkLost => "link_lost",
+            Self::WriteFailed(_) => "write_failed",
+        }
+    }
+
     pub const fn is_terminal(&self) -> bool {
         !matches!(self, Self::Running)
     }
@@ -461,6 +486,79 @@ impl R10BleProbeRunner {
             outcome: self.outcome,
             report: self.probe.report,
         }
+    }
+}
+
+pub const fn r10_ble_write_phase_label(phase: R10BleWritePhase) -> &'static str {
+    match phase {
+        R10BleWritePhase::Subscribe => "subscribe",
+        R10BleWritePhase::RemoteStart => "remote_start",
+        R10BleWritePhase::Poll => "poll",
+        R10BleWritePhase::Shutdown => "shutdown",
+    }
+}
+
+const fn r10_ble_flag(value: bool) -> u8 {
+    if value { 1 } else { 0 }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct R10BleProbeLogFormatter;
+
+impl R10BleProbeLogFormatter {
+    pub fn write_report_line<W: fmt::Write>(
+        out: &mut W,
+        outcome: R10BleProbeOutcome,
+        report: &R10BleProbeReport,
+    ) -> fmt::Result {
+        write!(out, "[r10-ble-probe] outcome={}", outcome.as_str())?;
+
+        if let R10BleProbeOutcome::WriteFailed(phase) = outcome {
+            write!(out, " write_phase={}", r10_ble_write_phase_label(phase))?;
+        }
+
+        write!(
+            out,
+            " scan={} connected={} gatt={} notify_sub={} remote={} stopped={} polls={} notify={} no_event={} motion={} vendor7301={} unknown={} bad_checksum={} wrong_handle={} wrong_length={}",
+            r10_ble_flag(report.scan_matched),
+            r10_ble_flag(report.connected),
+            r10_ble_flag(report.gatt_ready),
+            r10_ble_flag(report.notify_subscribed),
+            r10_ble_flag(report.remote_started),
+            r10_ble_flag(report.remote_stopped),
+            report.polls_written,
+            report.notifications_total,
+            report.no_event_count,
+            report.motion_count,
+            report.vendor_status_7301_count,
+            report.unknown_valid_count,
+            report.bad_checksum_count,
+            report.wrong_handle_count,
+            report.wrong_length_count,
+        )
+    }
+
+    pub fn write_run_result_line<W: fmt::Write>(
+        out: &mut W,
+        result: &R10BleProbeRunResult,
+    ) -> fmt::Result {
+        Self::write_report_line(out, result.outcome, &result.report)
+    }
+
+    pub fn write_notify_line<W: fmt::Write>(
+        out: &mut W,
+        kind: R10BleProbeNotifyKind,
+        report: &R10BleProbeReport,
+    ) -> fmt::Result {
+        write!(
+            out,
+            "[r10-ble-probe] notify kind={} total={} motion={} vendor7301={} ignored_valid={}",
+            kind.as_str(),
+            report.notifications_total,
+            report.motion_count,
+            report.vendor_status_7301_count,
+            r10_ble_flag(kind.is_ignored_valid_packet()),
+        )
     }
 }
 
@@ -786,5 +884,141 @@ mod runner_tests {
             R10BleProbeOutcome::WriteFailed(R10BleWritePhase::RemoteStart)
         );
         assert!(!result.report.remote_started);
+    }
+}
+
+#[cfg(test)]
+mod log_formatter_tests {
+    use super::*;
+    use std::string::String;
+
+    fn sample_valid_report() -> R10BleProbeReport {
+        R10BleProbeReport {
+            scan_matched: true,
+            connected: true,
+            gatt_ready: true,
+            notify_subscribed: true,
+            remote_started: true,
+            remote_stopped: false,
+            polls_written: 2,
+            notifications_total: 3,
+            no_event_count: 1,
+            motion_count: 1,
+            vendor_status_7301_count: 1,
+            unknown_valid_count: 0,
+            bad_checksum_count: 0,
+            wrong_handle_count: 0,
+            wrong_length_count: 0,
+        }
+    }
+
+    #[test]
+    fn r10_ble_probe_log_labels_outcomes_and_write_phases() {
+        assert_eq!(R10BleProbeOutcome::Running.as_str(), "running");
+        assert_eq!(R10BleProbeOutcome::Validated.as_str(), "validated");
+        assert_eq!(R10BleProbeOutcome::TimedOut.as_str(), "timed_out");
+        assert_eq!(R10BleProbeOutcome::ConnectFailed.as_str(), "connect_failed");
+        assert_eq!(R10BleProbeOutcome::LinkLost.as_str(), "link_lost");
+        assert_eq!(
+            R10BleProbeOutcome::WriteFailed(R10BleWritePhase::RemoteStart).as_str(),
+            "write_failed"
+        );
+
+        assert_eq!(
+            r10_ble_write_phase_label(R10BleWritePhase::Subscribe),
+            "subscribe"
+        );
+        assert_eq!(
+            r10_ble_write_phase_label(R10BleWritePhase::RemoteStart),
+            "remote_start"
+        );
+        assert_eq!(r10_ble_write_phase_label(R10BleWritePhase::Poll), "poll");
+        assert_eq!(
+            r10_ble_write_phase_label(R10BleWritePhase::Shutdown),
+            "shutdown"
+        );
+    }
+
+    #[test]
+    fn r10_ble_probe_log_labels_notify_kinds() {
+        assert_eq!(R10BleProbeNotifyKind::NoEvent.as_str(), "no_event");
+        assert_eq!(R10BleProbeNotifyKind::Motion.as_str(), "motion");
+        assert_eq!(
+            R10BleProbeNotifyKind::VendorStatus7301.as_str(),
+            "vendor_status_7301"
+        );
+        assert_eq!(
+            R10BleProbeNotifyKind::UnknownValid.as_str(),
+            "unknown_valid"
+        );
+        assert_eq!(R10BleProbeNotifyKind::BadChecksum.as_str(), "bad_checksum");
+        assert_eq!(R10BleProbeNotifyKind::WrongHandle.as_str(), "wrong_handle");
+        assert_eq!(R10BleProbeNotifyKind::WrongLength.as_str(), "wrong_length");
+    }
+
+    #[test]
+    fn r10_ble_probe_log_report_line_is_compact_and_monitor_safe() {
+        let mut line = String::new();
+
+        R10BleProbeLogFormatter::write_report_line(
+            &mut line,
+            R10BleProbeOutcome::Validated,
+            &sample_valid_report(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            line,
+            "[r10-ble-probe] outcome=validated scan=1 connected=1 gatt=1 notify_sub=1 remote=1 stopped=0 polls=2 notify=3 no_event=1 motion=1 vendor7301=1 unknown=0 bad_checksum=0 wrong_handle=0 wrong_length=0"
+        );
+    }
+
+    #[test]
+    fn r10_ble_probe_log_report_line_includes_failed_write_phase() {
+        let mut line = String::new();
+
+        R10BleProbeLogFormatter::write_report_line(
+            &mut line,
+            R10BleProbeOutcome::WriteFailed(R10BleWritePhase::RemoteStart),
+            &R10BleProbeReport::default(),
+        )
+        .unwrap();
+
+        assert!(line.starts_with("[r10-ble-probe] outcome=write_failed write_phase=remote_start"));
+        assert!(line.contains("scan=0 connected=0 gatt=0"));
+    }
+
+    #[test]
+    fn r10_ble_probe_log_run_result_line_reuses_report_formatter() {
+        let result = R10BleProbeRunResult {
+            effect: R10BleRuntimeEffect::None,
+            outcome: R10BleProbeOutcome::Validated,
+            report: sample_valid_report(),
+        };
+        let mut line = String::new();
+
+        R10BleProbeLogFormatter::write_run_result_line(&mut line, &result).unwrap();
+
+        assert!(line.contains("outcome=validated"));
+        assert!(line.contains("notify=3"));
+        assert!(line.contains("motion=1"));
+        assert!(line.contains("vendor7301=1"));
+    }
+
+    #[test]
+    fn r10_ble_probe_log_notify_line_marks_ignored_vendor_status() {
+        let mut line = String::new();
+
+        R10BleProbeLogFormatter::write_notify_line(
+            &mut line,
+            R10BleProbeNotifyKind::VendorStatus7301,
+            &sample_valid_report(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            line,
+            "[r10-ble-probe] notify kind=vendor_status_7301 total=3 motion=1 vendor7301=1 ignored_valid=1"
+        );
     }
 }
