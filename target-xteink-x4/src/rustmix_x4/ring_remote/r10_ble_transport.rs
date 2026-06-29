@@ -234,6 +234,12 @@ pub enum R10BleGattNotifyGate {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattNotifyPolicyResult {
+    Rejected(R10BleGattNotifyGate),
+    Accepted(R10RemoteAction),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum R10BleGattOperation {
     WriteCccd { handle: u16, value: [u8; 2] },
     WriteRemoteCommand { handle: u16, command: R10BleCommand },
@@ -372,6 +378,34 @@ impl R10BleRemoteSession {
         try_enqueue_remote_action(action)
     }
 
+    pub fn on_gatt_notify(
+        &mut self,
+        handles: &R10BleGattHandles,
+        handle: u16,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> R10BleGattNotifyPolicyResult {
+        match handles.gate_notify(handle, payload) {
+            R10BleGattNotifyGate::Accepted(packet) => {
+                R10BleGattNotifyPolicyResult::Accepted(self.on_notify(now_ms, &packet))
+            }
+            rejected => R10BleGattNotifyPolicyResult::Rejected(rejected),
+        }
+    }
+
+    pub fn on_gatt_notify_enqueue(
+        &mut self,
+        handles: &R10BleGattHandles,
+        handle: u16,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> bool {
+        match self.on_gatt_notify(handles, handle, payload, now_ms) {
+            R10BleGattNotifyPolicyResult::Accepted(action) => try_enqueue_remote_action(action),
+            R10BleGattNotifyPolicyResult::Rejected(_) => false,
+        }
+    }
+
     pub fn should_poll(&self, now_ms: u64) -> bool {
         matches!(self.state, R10BleTransportState::Polling) && now_ms >= self.next_poll_due_ms
     }
@@ -398,6 +432,61 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_notify_bridge_accepts_motion_into_reader_action() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(
+            session.on_gatt_notify(&handles, 5, &MOTION, 10_000),
+            R10BleGattNotifyPolicyResult::Accepted(R10RemoteAction::Reader(
+                RustmixReaderAction::NextPage
+            ))
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_notify_bridge_preserves_policy_none_for_debounce() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(
+            session.on_gatt_notify(&handles, 5, &MOTION, 10_000),
+            R10BleGattNotifyPolicyResult::Accepted(R10RemoteAction::Reader(
+                RustmixReaderAction::NextPage
+            ))
+        );
+        assert_eq!(
+            session.on_gatt_notify(&handles, 5, &MOTION, 11_000),
+            R10BleGattNotifyPolicyResult::Accepted(R10RemoteAction::None)
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_notify_bridge_rejects_wrong_handle_before_policy() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(
+            session.on_gatt_notify(&handles, 7, &MOTION, 10_000),
+            R10BleGattNotifyPolicyResult::Rejected(R10BleGattNotifyGate::WrongHandle {
+                expected: Some(5),
+                actual: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_notify_bridge_rejects_wrong_length_before_policy() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(
+            session.on_gatt_notify(&handles, 5, &[0x02, 0x02, 0x04], 10_000),
+            R10BleGattNotifyPolicyResult::Rejected(R10BleGattNotifyGate::WrongLength { actual: 3 })
+        );
+    }
 
     #[test]
     fn r10_ble_gatt_notify_gate_accepts_matching_16_byte_notify() {
