@@ -414,6 +414,20 @@ impl R10BleRemoteSession {
         self.next_poll_due_ms = now_ms.saturating_add(self.poll_interval_ms);
     }
 
+    pub fn poll_due_write(
+        &mut self,
+        handles: &R10BleGattHandles,
+        now_ms: u64,
+    ) -> Option<R10BleGattWrite> {
+        if !self.should_poll(now_ms) {
+            return None;
+        }
+
+        let write = handles.poll_write()?;
+        self.mark_poll_sent(now_ms);
+        Some(write)
+    }
+
     pub fn start_polling(&mut self, now_ms: u64) {
         self.state = R10BleTransportState::Polling;
         self.next_poll_due_ms = now_ms;
@@ -432,6 +446,57 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_session_poll_due_write_requires_polling_state() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(session.poll_due_write(&handles, 10_000), None);
+    }
+
+    #[test]
+    fn r10_ble_session_poll_due_write_serializes_due_poll_and_advances_timer() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.start_polling(10_000);
+
+        let write = session.poll_due_write(&handles, 10_000).unwrap();
+        assert_eq!(write.handle, 3);
+        assert_eq!(
+            write.payload(),
+            &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+        );
+        assert_eq!(session.next_poll_due_ms, 11_000);
+    }
+
+    #[test]
+    fn r10_ble_session_poll_due_write_waits_until_next_due_time() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.start_polling(10_000);
+        assert!(session.poll_due_write(&handles, 10_000).is_some());
+
+        assert_eq!(session.poll_due_write(&handles, 10_999), None);
+        assert!(session.poll_due_write(&handles, 11_000).is_some());
+        assert_eq!(session.next_poll_due_ms, 12_000);
+    }
+
+    #[test]
+    fn r10_ble_session_poll_due_write_does_not_advance_when_handles_incomplete() {
+        let handles = R10BleGattHandles {
+            notify_cccd_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.start_polling(10_000);
+
+        assert_eq!(session.poll_due_write(&handles, 10_000), None);
+        assert_eq!(session.next_poll_due_ms, 10_000);
+    }
 
     #[test]
     fn r10_ble_gatt_notify_bridge_accepts_motion_into_reader_action() {
