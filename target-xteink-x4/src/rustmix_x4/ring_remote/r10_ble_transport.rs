@@ -234,9 +234,16 @@ impl R10BleGattWritePayload {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattWriteMode {
+    WithResponse,
+    WithoutResponse,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleGattWrite {
     pub handle: u16,
     pub payload: R10BleGattWritePayload,
+    pub mode: R10BleGattWriteMode,
 }
 
 impl R10BleGattWrite {
@@ -247,6 +254,10 @@ impl R10BleGattWrite {
     pub const fn payload_len(&self) -> usize {
         self.payload.len()
     }
+
+    pub const fn write_mode(&self) -> R10BleGattWriteMode {
+        self.mode
+    }
 }
 
 impl R10BleGattOperation {
@@ -255,10 +266,12 @@ impl R10BleGattOperation {
             Self::WriteCccd { handle, value } => R10BleGattWrite {
                 handle,
                 payload: R10BleGattWritePayload::Cccd(value),
+                mode: R10BleGattWriteMode::WithResponse,
             },
             Self::WriteRemoteCommand { handle, command } => R10BleGattWrite {
                 handle,
                 payload: R10BleGattWritePayload::RemoteCommand(*command.packet()),
+                mode: R10BleGattWriteMode::WithoutResponse,
             },
         }
     }
@@ -357,6 +370,46 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_write_modes_separate_cccd_from_remote_commands() {
+        let cccd = R10BleGattOperation::WriteCccd {
+            handle: 6,
+            value: R10_BLE_NOTIFY_CCCD_ENABLE,
+        }
+        .to_write();
+
+        let command = R10BleGattOperation::WriteRemoteCommand {
+            handle: 3,
+            command: R10BleCommand::PollRemote,
+        }
+        .to_write();
+
+        assert_eq!(cccd.write_mode(), R10BleGattWriteMode::WithResponse);
+        assert_eq!(command.write_mode(), R10BleGattWriteMode::WithoutResponse);
+    }
+
+    #[test]
+    fn r10_ble_gatt_write_sequences_preserve_expected_write_modes() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        let startup = handles.startup_writes().unwrap();
+        assert_eq!(startup[0].write_mode(), R10BleGattWriteMode::WithResponse);
+        assert_eq!(
+            startup[1].write_mode(),
+            R10BleGattWriteMode::WithoutResponse
+        );
+
+        let poll = handles.poll_write().unwrap();
+        assert_eq!(poll.write_mode(), R10BleGattWriteMode::WithoutResponse);
+
+        let shutdown = handles.shutdown_writes().unwrap();
+        assert_eq!(
+            shutdown[0].write_mode(),
+            R10BleGattWriteMode::WithoutResponse
+        );
+        assert_eq!(shutdown[1].write_mode(), R10BleGattWriteMode::WithResponse);
+    }
 
     #[test]
     fn r10_ble_gatt_startup_writes_are_serialized_in_order() {
