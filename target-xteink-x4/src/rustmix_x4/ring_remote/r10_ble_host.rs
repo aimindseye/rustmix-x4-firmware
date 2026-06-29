@@ -64,6 +64,27 @@ pub fn r10_ble_host_trait_boundary_probe() -> (&'static str, &'static str, &'sta
     )
 }
 
+#[cfg(feature = "r10-ble-host")]
+pub type R10BleController = bt_hci::controller::Controller<BleConnector<'static>>;
+
+#[cfg(feature = "r10-ble-host")]
+pub type R10BlePacketPool = trouble_host::prelude::DefaultPacketPool;
+
+#[cfg(feature = "r10-ble-host")]
+pub type R10BleHostResources = trouble_host::HostResources<R10BlePacketPool, 1, 4>;
+
+#[cfg(feature = "r10-ble-host")]
+pub type R10BleStack<'stack> = trouble_host::Stack<'stack, R10BleController, R10BlePacketPool>;
+
+#[cfg(feature = "r10-ble-host")]
+pub fn r10_ble_host_stack_shape_probe() -> (&'static str, &'static str, &'static str) {
+    (
+        core::any::type_name::<R10BleController>(),
+        core::any::type_name::<R10BleHostResources>(),
+        core::any::type_name::<R10BleStack<'static>>(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

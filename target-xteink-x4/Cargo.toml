@@ -12,6 +12,7 @@ r10-ble-host = [
     "dep:bt-hci",
     "dep:trouble-host", "trouble-host/central",
     "trouble-host/gatt",
+    "trouble-host/default-packet-pool",
 ]
 
 default = []
@@ -49,7 +50,7 @@ embassy-net = { version = "0.8", features = ["dhcpv4", "dns", "medium-ethernet",
 embedded-io-async = "0.7"
 esp-radio = { version = "0.17", default-features = false, features = ["esp32c3", "wifi", "log-04", "esp-alloc"] }
 bt-hci = { version = "0.6.0", default-features = false, optional = true }
-trouble-host = { version = "=0.5.0", default-features = false, features = ["central", "gatt"], optional = true }
+trouble-host = { version = "=0.5.0", default-features = false, features = ["central", "gatt", "default-packet-pool"], optional = true }
 
 [build-dependencies]
 fontdue = "0.9"
