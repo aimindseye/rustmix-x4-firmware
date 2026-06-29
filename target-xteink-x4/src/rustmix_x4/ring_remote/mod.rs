@@ -24,9 +24,10 @@ pub use r10_input_bridge::{
 pub use r10_ble_transport::{
     R10_BLE_NOTIFY_CCCD_DISABLE, R10_BLE_NOTIFY_CCCD_ENABLE, R10_BLE_NOTIFY_UUID,
     R10_BLE_POLL_INTERVAL_MS, R10_BLE_RECONNECT_BACKOFF_MS, R10_BLE_SERVICE_UUID,
-    R10_BLE_WRITE_UUID, R10BleCommand, R10BleGattDiscoveryEvent, R10BleGattHandles,
-    R10BleGattNotifyGate, R10BleGattNotifyPolicyResult, R10BleGattOperation, R10BleGattWrite,
-    R10BleGattWriteMode, R10BleGattWritePayload, R10BleRemoteSession, R10BleTransportState,
+    R10_BLE_WRITE_UUID, R10BleCommand, R10BleGattDiscoveryEvent, R10BleGattDiscoveryStatus,
+    R10BleGattHandles, R10BleGattNotifyGate, R10BleGattNotifyPolicyResult, R10BleGattOperation,
+    R10BleGattWrite, R10BleGattWriteMode, R10BleGattWritePayload, R10BleRemoteSession,
+    R10BleTransportState,
 };
 
 #[cfg(feature = "r10-ble-host")]

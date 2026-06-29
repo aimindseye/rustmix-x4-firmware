@@ -26,6 +26,24 @@ pub enum R10BleGattDiscoveryEvent {
     NotifyCccd { handle: u16 },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattDiscoveryStatus {
+    Ready(R10BleGattHandles),
+    Incomplete(R10BleGattHandles),
+}
+
+impl R10BleGattDiscoveryStatus {
+    pub fn handles(&self) -> R10BleGattHandles {
+        match self {
+            Self::Ready(handles) | Self::Incomplete(handles) => *handles,
+        }
+    }
+
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct R10BleGattHandles {
     pub service_start_handle: Option<u16>,
@@ -129,6 +147,14 @@ impl R10BleGattHandles {
 
     pub fn can_start_remote_mode(&self) -> bool {
         self.is_complete()
+    }
+
+    pub fn discovery_status(&self) -> R10BleGattDiscoveryStatus {
+        if self.is_complete() {
+            R10BleGattDiscoveryStatus::Ready(*self)
+        } else {
+            R10BleGattDiscoveryStatus::Incomplete(*self)
+        }
     }
 
     pub fn enable_notify_operation(&self) -> Option<R10BleGattOperation> {
@@ -441,6 +467,16 @@ impl R10BleRemoteSession {
         self.state = R10BleTransportState::Discovering;
     }
 
+    pub fn complete_discovery(&mut self, handles: R10BleGattHandles) -> R10BleGattDiscoveryStatus {
+        let status = handles.discovery_status();
+
+        if status.is_ready() {
+            self.state = R10BleTransportState::Subscribing;
+        }
+
+        status
+    }
+
     pub fn begin_subscribe(&mut self, handles: &R10BleGattHandles) -> Option<R10BleGattWrite> {
         let write = handles.enable_notify_operation()?.to_write();
         self.state = R10BleTransportState::Subscribing;
@@ -509,6 +545,64 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_discovery_status_reports_ready_only_when_complete() {
+        let complete = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        assert_eq!(
+            complete.discovery_status(),
+            R10BleGattDiscoveryStatus::Ready(complete)
+        );
+
+        let incomplete = R10BleGattHandles {
+            write_value_handle: None,
+            ..complete
+        };
+        assert_eq!(
+            incomplete.discovery_status(),
+            R10BleGattDiscoveryStatus::Incomplete(incomplete)
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_discovery_status_exposes_handles_and_ready_flag() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        let ready = R10BleGattDiscoveryStatus::Ready(handles);
+        assert!(ready.is_ready());
+        assert_eq!(ready.handles(), handles);
+
+        let incomplete = R10BleGattDiscoveryStatus::Incomplete(R10BleGattHandles::unresolved());
+        assert!(!incomplete.is_ready());
+        assert_eq!(incomplete.handles(), R10BleGattHandles::unresolved());
+    }
+
+    #[test]
+    fn r10_ble_session_complete_discovery_moves_to_subscribing_when_ready() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.begin_discovery();
+        let status = session.complete_discovery(handles);
+
+        assert_eq!(status, R10BleGattDiscoveryStatus::Ready(handles));
+        assert_eq!(session.state, R10BleTransportState::Subscribing);
+    }
+
+    #[test]
+    fn r10_ble_session_complete_discovery_keeps_discovering_when_incomplete() {
+        let handles = R10BleGattHandles {
+            notify_value_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.begin_discovery();
+        let status = session.complete_discovery(handles);
+
+        assert_eq!(status, R10BleGattDiscoveryStatus::Incomplete(handles));
+        assert_eq!(session.state, R10BleTransportState::Discovering);
+    }
 
     #[test]
     fn r10_ble_session_begin_scan_marks_scanning_and_clears_timer() {
