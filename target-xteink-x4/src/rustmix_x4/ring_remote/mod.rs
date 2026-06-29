@@ -29,8 +29,9 @@ pub use r10_ble_transport::{
 
 #[cfg(feature = "r10-ble-host")]
 pub use r10_ble_host::{
-    R10_BLE_HOST_STATUS, R10BleController, R10BleHostBuildStatus, R10BleHostResources,
-    R10BlePacketPool, R10BleStack, r10_ble_host_contract_summary,
+    R10_BLE_GATT_RUNTIME_PLAN, R10_BLE_HOST_STATUS, R10_BLE_RUNTIME_PLAN, R10BleController,
+    R10BleGattRuntimePlan, R10BleHostBuildStatus, R10BleHostResources, R10BlePacketPool,
+    R10BleRuntimeStep, R10BleStack, r10_ble_gatt_runtime_plan, r10_ble_host_contract_summary,
     r10_ble_host_stack_probe_type_names, r10_ble_host_stack_shape_probe,
-    r10_ble_host_trait_boundary_probe,
+    r10_ble_host_trait_boundary_probe, r10_ble_runtime_plan,
 };
