@@ -6,6 +6,7 @@
 
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
+mod r10_ble_probe;
 pub mod r10_ble_transport;
 pub mod r10_input_bridge;
 pub mod r10_protocol;
@@ -19,6 +20,12 @@ pub use r10_remote_policy::{R10RemoteAction, R10RemoteDebounce, R10RemotePolicy,
 
 pub use r10_input_bridge::{
     R10_NEXT_PAGE_BUTTON, R10_PREVIOUS_PAGE_BUTTON, R10InputInjection, try_enqueue_remote_action,
+};
+
+pub use r10_ble_probe::{
+    R10_BLE_PROBE_DEFAULT_DEBOUNCE_MS, R10_BLE_PROBE_DEFAULT_DURATION_MS, R10_BLE_PROBE_STEPS,
+    R10BleOnDeviceProbe, R10BleProbeConfig, R10BleProbeNotifyKind, R10BleProbeReport,
+    R10BleProbeStep, classify_accepted_packet, classify_notify, packet_checksum_ok,
 };
 
 pub use r10_ble_transport::{
