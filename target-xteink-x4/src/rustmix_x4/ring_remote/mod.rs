@@ -4,6 +4,7 @@
 //! BLE central transport is added later so the existing Reader/Wi-Fi/Sleep
 //! baseline stays protected while the R10 protocol is validated.
 
+pub mod r10_ble_transport;
 pub mod r10_input_bridge;
 pub mod r10_protocol;
 pub mod r10_remote_policy;
@@ -16,4 +17,10 @@ pub use r10_remote_policy::{R10RemoteAction, R10RemoteDebounce, R10RemotePolicy,
 
 pub use r10_input_bridge::{
     R10_NEXT_PAGE_BUTTON, R10_PREVIOUS_PAGE_BUTTON, R10InputInjection, try_enqueue_remote_action,
+};
+
+pub use r10_ble_transport::{
+    R10_BLE_NOTIFY_UUID, R10_BLE_POLL_INTERVAL_MS, R10_BLE_RECONNECT_BACKOFF_MS,
+    R10_BLE_SERVICE_UUID, R10_BLE_WRITE_UUID, R10BleCommand, R10BleRemoteSession,
+    R10BleTransportState,
 };

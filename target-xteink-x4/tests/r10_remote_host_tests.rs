@@ -74,6 +74,10 @@ mod rustmix_x4 {
         pub mod r10_input_bridge {
             include!("../src/rustmix_x4/ring_remote/r10_input_bridge.rs");
         }
+
+        pub mod r10_ble_transport {
+            include!("../src/rustmix_x4/ring_remote/r10_ble_transport.rs");
+        }
     }
 }
 
@@ -83,6 +87,11 @@ use rustmix_x4::ring_remote::r10_protocol::{
 };
 
 use rustmix_x4::ring_remote::r10_input_bridge::R10InputInjection;
+
+use rustmix_x4::ring_remote::r10_ble_transport::{
+    R10_BLE_NOTIFY_UUID, R10_BLE_SERVICE_UUID, R10_BLE_WRITE_UUID, R10BleCommand,
+    R10BleRemoteSession,
+};
 use rustmix_x4::ring_remote::r10_remote_policy::{
     R10RemoteAction, R10RemotePolicy, R10RemoteScreen,
 };
@@ -167,4 +176,39 @@ fn r10_host_previous_page_maps_to_existing_x4_previous_button() {
         )),
         R10InputInjection::Press(Event::Press(Button::VolUp))
     );
+}
+
+#[test]
+fn r10_host_ble_uuid_contract_matches_stock_gatt() {
+    assert_eq!(R10_BLE_SERVICE_UUID, "6e40fff0-b5a3-f393-e0a9-e50e24dcca9e");
+    assert_eq!(R10_BLE_WRITE_UUID, "6e400002-b5a3-f393-e0a9-e50e24dcca9e");
+    assert_eq!(R10_BLE_NOTIFY_UUID, "6e400003-b5a3-f393-e0a9-e50e24dcca9e");
+}
+
+#[test]
+fn r10_host_ble_commands_match_stock_packets() {
+    assert_eq!(
+        R10BleCommand::StartRemote.packet(),
+        &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+    );
+    assert_eq!(
+        R10BleCommand::PollRemote.packet(),
+        &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+    );
+    assert_eq!(
+        R10BleCommand::StopRemote.packet(),
+        &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+    );
+}
+
+#[test]
+fn r10_host_ble_notify_motion_uses_existing_policy() {
+    let motion = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    let mut session = R10BleRemoteSession::reader_remote(3500);
+    assert_eq!(
+        session.on_notify(10_000, &motion),
+        R10RemoteAction::Reader(RustmixReaderAction::NextPage)
+    );
+    assert_eq!(session.on_notify(11_000, &motion), R10RemoteAction::None);
 }
