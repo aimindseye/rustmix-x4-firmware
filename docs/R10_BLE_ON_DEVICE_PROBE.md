@@ -58,3 +58,40 @@ BLE remains disabled by default. This probe contract only adds the state/report
 model and tests. The actual ESP32-C3 BLE task should remain behind the existing
 `r10-ble-host` feature and an explicit runtime setting before it is allowed to
 scan/connect on device.
+
+
+## Probe event runner
+
+`R10BleProbeRunner` wraps `R10BleOnDeviceProbe` with a deadline and terminal
+outcome. The future BLE task should call:
+
+    R10BleProbeRunner::live_r10(started_at_ms)
+
+Then feed events:
+
+    AdvertisedDevice(...)
+    Connected
+    Discovery(...)
+    DiscoveryComplete
+    WriteResult { phase, success, now_ms }
+    Notify { handle, payload, now_ms }
+    ConnectFailed { now_ms }
+    LinkLost { now_ms }
+
+The runner returns `R10BleProbeRunResult` after each event:
+
+    effect
+    outcome
+    report
+
+Terminal outcomes:
+
+    Validated
+    TimedOut
+    ConnectFailed
+    LinkLost
+    WriteFailed(...)
+
+`Validated` means scan, connect, GATT discovery, notify subscription, remote start,
+and at least one notification all completed.
+

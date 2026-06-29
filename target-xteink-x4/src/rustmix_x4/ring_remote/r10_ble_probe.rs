@@ -230,6 +230,13 @@ impl R10BleOnDeviceProbe {
         effect
     }
 
+    pub fn on_link_lost(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        let effect = self.runtime.link_lost_effect(now_ms);
+        self.report
+            .record_connection_result(R10BleConnectionResult::LinkLost);
+        effect
+    }
+
     pub fn on_discovery_event(&mut self, event: R10BleGattDiscoveryEvent) -> R10BleRuntimeEffect {
         self.runtime.discovery_event_effect(event)
     }
@@ -307,6 +314,154 @@ pub fn packet_checksum_ok(packet: &[u8; 16]) -> bool {
         == packet[..15]
             .iter()
             .fold(0u8, |acc, byte| acc.wrapping_add(*byte))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleProbeEvent<'a> {
+    AdvertisedDevice(R10BleAdvertisedDevice<'a>),
+    Connected,
+    ConnectFailed {
+        now_ms: u64,
+    },
+    LinkLost {
+        now_ms: u64,
+    },
+    Discovery(R10BleGattDiscoveryEvent),
+    DiscoveryComplete,
+    WriteResult {
+        phase: R10BleWritePhase,
+        success: bool,
+        now_ms: u64,
+    },
+    Notify {
+        handle: u16,
+        payload: &'a [u8],
+        now_ms: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleProbeOutcome {
+    Running,
+    Validated,
+    TimedOut,
+    ConnectFailed,
+    LinkLost,
+    WriteFailed(R10BleWritePhase),
+}
+
+impl R10BleProbeOutcome {
+    pub const fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Running)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleProbeRunResult {
+    pub effect: R10BleRuntimeEffect,
+    pub outcome: R10BleProbeOutcome,
+    pub report: R10BleProbeReport,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleProbeRunner {
+    pub probe: R10BleOnDeviceProbe,
+    pub started_at_ms: u64,
+    pub deadline_ms: u64,
+    pub outcome: R10BleProbeOutcome,
+}
+
+impl R10BleProbeRunner {
+    pub fn live_r10(started_at_ms: u64) -> Self {
+        Self::start(started_at_ms, R10BleProbeConfig::live_r10())
+    }
+
+    pub fn start(started_at_ms: u64, config: R10BleProbeConfig) -> Self {
+        let mut probe = R10BleOnDeviceProbe::new(config);
+        probe.begin_scan();
+
+        Self {
+            probe,
+            started_at_ms,
+            deadline_ms: started_at_ms.saturating_add(config.duration_ms),
+            outcome: R10BleProbeOutcome::Running,
+        }
+    }
+
+    pub fn on_event(&mut self, event: R10BleProbeEvent<'_>) -> R10BleProbeRunResult {
+        let mut timed_now = None;
+
+        let effect = match event {
+            R10BleProbeEvent::AdvertisedDevice(device) => self.probe.on_advertised_device(device),
+            R10BleProbeEvent::Connected => self.probe.on_connected(),
+            R10BleProbeEvent::ConnectFailed { now_ms } => {
+                timed_now = Some(now_ms);
+                self.outcome = R10BleProbeOutcome::ConnectFailed;
+                self.probe.on_connect_failed(now_ms)
+            }
+            R10BleProbeEvent::LinkLost { now_ms } => {
+                timed_now = Some(now_ms);
+                self.outcome = R10BleProbeOutcome::LinkLost;
+                self.probe.on_link_lost(now_ms)
+            }
+            R10BleProbeEvent::Discovery(event) => self.probe.on_discovery_event(event),
+            R10BleProbeEvent::DiscoveryComplete => self.probe.on_discovery_complete(),
+            R10BleProbeEvent::WriteResult {
+                phase,
+                success,
+                now_ms,
+            } => {
+                timed_now = Some(now_ms);
+
+                if !success {
+                    self.outcome = R10BleProbeOutcome::WriteFailed(phase);
+                }
+
+                self.probe.on_write_result(phase, success, now_ms)
+            }
+            R10BleProbeEvent::Notify {
+                handle,
+                payload,
+                now_ms,
+            } => {
+                timed_now = Some(now_ms);
+                self.probe.on_notify(handle, payload, now_ms)
+            }
+        };
+
+        self.update_outcome(timed_now);
+        self.result(effect)
+    }
+
+    pub fn on_tick(&mut self, now_ms: u64) -> R10BleProbeRunResult {
+        self.update_outcome(Some(now_ms));
+        self.result(R10BleRuntimeEffect::None)
+    }
+
+    fn update_outcome(&mut self, now_ms: Option<u64>) {
+        if self.outcome.is_terminal() {
+            return;
+        }
+
+        if self.probe.report.connectivity_validated() {
+            self.outcome = R10BleProbeOutcome::Validated;
+            return;
+        }
+
+        if let Some(now_ms) = now_ms {
+            if now_ms >= self.deadline_ms {
+                self.outcome = R10BleProbeOutcome::TimedOut;
+            }
+        }
+    }
+
+    fn result(&self, effect: R10BleRuntimeEffect) -> R10BleProbeRunResult {
+        R10BleProbeRunResult {
+            effect,
+            outcome: self.outcome,
+            report: self.probe.report,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -491,5 +646,145 @@ mod tests {
         assert_eq!(probe.report.motion_count, 1);
         assert_eq!(probe.report.vendor_status_7301_count, 1);
         assert!(R10BleProbeNotifyKind::VendorStatus7301.is_ignored_valid_packet());
+    }
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::super::r10_ble_transport::{
+        R10_BLE_DEFAULT_ADVERTISED_NAME, R10_BLE_DEFAULT_TARGET_ADDRESS,
+        R10_BLE_LIVE_NOTIFY_CCCD_HANDLE, R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+        R10_BLE_LIVE_SERVICE_END_HANDLE, R10_BLE_LIVE_SERVICE_START_HANDLE,
+        R10_BLE_LIVE_WRITE_VALUE_HANDLE, R10BleTransportState,
+    };
+    use super::*;
+
+    fn live_device<'a>() -> R10BleAdvertisedDevice<'a> {
+        R10BleAdvertisedDevice {
+            address: Some(R10_BLE_DEFAULT_TARGET_ADDRESS),
+            name: Some(R10_BLE_DEFAULT_ADVERTISED_NAME),
+        }
+    }
+
+    fn feed_live_discovery(runner: &mut R10BleProbeRunner) {
+        runner.on_event(R10BleProbeEvent::Discovery(
+            R10BleGattDiscoveryEvent::Service {
+                start_handle: R10_BLE_LIVE_SERVICE_START_HANDLE,
+                end_handle: R10_BLE_LIVE_SERVICE_END_HANDLE,
+            },
+        ));
+        runner.on_event(R10BleProbeEvent::Discovery(
+            R10BleGattDiscoveryEvent::WriteCharacteristic {
+                value_handle: R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            },
+        ));
+        runner.on_event(R10BleProbeEvent::Discovery(
+            R10BleGattDiscoveryEvent::NotifyCharacteristic {
+                value_handle: R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            },
+        ));
+        runner.on_event(R10BleProbeEvent::Discovery(
+            R10BleGattDiscoveryEvent::NotifyCccd {
+                handle: R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+            },
+        ));
+    }
+
+    #[test]
+    fn r10_ble_probe_runner_starts_scanning_with_deadline() {
+        let runner = R10BleProbeRunner::live_r10(1_000);
+
+        assert_eq!(runner.started_at_ms, 1_000);
+        assert_eq!(runner.deadline_ms, 31_000);
+        assert_eq!(runner.outcome, R10BleProbeOutcome::Running);
+        assert_eq!(
+            runner.probe.runtime.session.state,
+            R10BleTransportState::Scanning
+        );
+    }
+
+    #[test]
+    fn r10_ble_probe_runner_scan_and_connect_events_update_report() {
+        let mut runner = R10BleProbeRunner::live_r10(1_000);
+
+        assert_eq!(
+            runner
+                .on_event(R10BleProbeEvent::AdvertisedDevice(live_device()))
+                .effect,
+            R10BleRuntimeEffect::Scan(R10BleScanDecision::MatchByAddress)
+        );
+        assert!(runner.probe.report.scan_matched);
+
+        assert_eq!(
+            runner.on_event(R10BleProbeEvent::Connected).effect,
+            R10BleRuntimeEffect::Connection(R10BleConnectionResult::Connected)
+        );
+        assert!(runner.probe.report.connected);
+    }
+
+    #[test]
+    fn r10_ble_probe_runner_validates_after_full_probe_flow() {
+        let mut runner = R10BleProbeRunner::live_r10(1_000);
+
+        runner.on_event(R10BleProbeEvent::AdvertisedDevice(live_device()));
+        runner.on_event(R10BleProbeEvent::Connected);
+        feed_live_discovery(&mut runner);
+        runner.on_event(R10BleProbeEvent::DiscoveryComplete);
+        runner.on_event(R10BleProbeEvent::WriteResult {
+            phase: R10BleWritePhase::Subscribe,
+            success: true,
+            now_ms: 2_000,
+        });
+        runner.on_event(R10BleProbeEvent::WriteResult {
+            phase: R10BleWritePhase::RemoteStart,
+            success: true,
+            now_ms: 2_100,
+        });
+
+        let result = runner.on_event(R10BleProbeEvent::Notify {
+            handle: R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            payload: &R10_NO_EVENT_PACKET,
+            now_ms: 2_200,
+        });
+
+        assert_eq!(result.outcome, R10BleProbeOutcome::Validated);
+        assert!(result.report.connectivity_validated());
+    }
+
+    #[test]
+    fn r10_ble_probe_runner_times_out_without_notifications() {
+        let mut runner = R10BleProbeRunner::live_r10(1_000);
+
+        let result = runner.on_tick(31_000);
+
+        assert_eq!(result.effect, R10BleRuntimeEffect::None);
+        assert_eq!(result.outcome, R10BleProbeOutcome::TimedOut);
+    }
+
+    #[test]
+    fn r10_ble_probe_runner_tracks_connect_failed() {
+        let mut runner = R10BleProbeRunner::live_r10(1_000);
+
+        let result = runner.on_event(R10BleProbeEvent::ConnectFailed { now_ms: 2_000 });
+
+        assert_eq!(result.outcome, R10BleProbeOutcome::ConnectFailed);
+        assert!(!result.report.connected);
+    }
+
+    #[test]
+    fn r10_ble_probe_runner_tracks_write_failure() {
+        let mut runner = R10BleProbeRunner::live_r10(1_000);
+
+        let result = runner.on_event(R10BleProbeEvent::WriteResult {
+            phase: R10BleWritePhase::RemoteStart,
+            success: false,
+            now_ms: 2_000,
+        });
+
+        assert_eq!(
+            result.outcome,
+            R10BleProbeOutcome::WriteFailed(R10BleWritePhase::RemoteStart)
+        );
+        assert!(!result.report.remote_started);
     }
 }
