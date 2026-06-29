@@ -428,6 +428,42 @@ impl R10BleRemoteSession {
         Some(write)
     }
 
+    pub fn begin_scan(&mut self) {
+        self.state = R10BleTransportState::Scanning;
+        self.next_poll_due_ms = 0;
+    }
+
+    pub fn begin_connect(&mut self) {
+        self.state = R10BleTransportState::Connecting;
+    }
+
+    pub fn begin_discovery(&mut self) {
+        self.state = R10BleTransportState::Discovering;
+    }
+
+    pub fn begin_subscribe(&mut self, handles: &R10BleGattHandles) -> Option<R10BleGattWrite> {
+        let write = handles.enable_notify_operation()?.to_write();
+        self.state = R10BleTransportState::Subscribing;
+        Some(write)
+    }
+
+    pub fn complete_subscribe(&mut self) {
+        self.state = R10BleTransportState::StartingRemote;
+    }
+
+    pub fn backoff_due(&self, now_ms: u64) -> bool {
+        matches!(self.state, R10BleTransportState::Backoff) && now_ms >= self.next_poll_due_ms
+    }
+
+    pub fn retry_after_backoff(&mut self, now_ms: u64) -> bool {
+        if !self.backoff_due(now_ms) {
+            return false;
+        }
+
+        self.begin_scan();
+        true
+    }
+
     pub fn begin_remote_start(
         &mut self,
         handles: &R10BleGattHandles,
@@ -473,6 +509,87 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_session_begin_scan_marks_scanning_and_clears_timer() {
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.start_polling(10_000);
+        session.begin_scan();
+
+        assert_eq!(session.state, R10BleTransportState::Scanning);
+        assert_eq!(session.next_poll_due_ms, 0);
+    }
+
+    #[test]
+    fn r10_ble_session_connection_state_steps_are_explicit() {
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.begin_scan();
+        assert_eq!(session.state, R10BleTransportState::Scanning);
+
+        session.begin_connect();
+        assert_eq!(session.state, R10BleTransportState::Connecting);
+
+        session.begin_discovery();
+        assert_eq!(session.state, R10BleTransportState::Discovering);
+    }
+
+    #[test]
+    fn r10_ble_session_begin_subscribe_returns_cccd_enable_write() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.begin_discovery();
+        let write = session.begin_subscribe(&handles).unwrap();
+
+        assert_eq!(session.state, R10BleTransportState::Subscribing);
+        assert_eq!(write.handle, 6);
+        assert_eq!(write.payload(), &[0x01, 0x00]);
+        assert_eq!(write.write_mode(), R10BleGattWriteMode::WithResponse);
+    }
+
+    #[test]
+    fn r10_ble_session_begin_subscribe_keeps_state_when_cccd_missing() {
+        let handles = R10BleGattHandles {
+            notify_cccd_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.begin_discovery();
+
+        assert_eq!(session.begin_subscribe(&handles), None);
+        assert_eq!(session.state, R10BleTransportState::Discovering);
+    }
+
+    #[test]
+    fn r10_ble_session_complete_subscribe_marks_starting_remote() {
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.begin_scan();
+        session.complete_subscribe();
+
+        assert_eq!(session.state, R10BleTransportState::StartingRemote);
+    }
+
+    #[test]
+    fn r10_ble_session_retry_after_backoff_waits_until_due_then_scans() {
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.enter_backoff(10_000);
+
+        assert_eq!(session.state, R10BleTransportState::Backoff);
+        assert_eq!(session.next_poll_due_ms, 13_000);
+        assert!(!session.backoff_due(12_999));
+        assert!(!session.retry_after_backoff(12_999));
+        assert_eq!(session.state, R10BleTransportState::Backoff);
+
+        assert!(session.backoff_due(13_000));
+        assert!(session.retry_after_backoff(13_000));
+        assert_eq!(session.state, R10BleTransportState::Scanning);
+        assert_eq!(session.next_poll_due_ms, 0);
+    }
 
     #[test]
     fn r10_ble_session_begin_remote_start_returns_startup_writes_and_marks_starting() {
