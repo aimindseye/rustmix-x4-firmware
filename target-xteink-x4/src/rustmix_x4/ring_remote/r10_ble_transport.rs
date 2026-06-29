@@ -539,6 +539,16 @@ impl R10BleRemoteSession {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleRuntimeEffect {
+    None,
+    Discovery(R10BleGattDiscoveryStatus),
+    Write(R10BleGattWrite),
+    Writes([R10BleGattWrite; 2]),
+    Notify(R10BleGattNotifyPolicyResult),
+    BackoffReady,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleRemoteRuntime {
     pub session: R10BleRemoteSession,
     pub handles: R10BleGattHandles,
@@ -626,6 +636,63 @@ impl R10BleRemoteRuntime {
     pub fn retry_after_backoff(&mut self, now_ms: u64) -> bool {
         self.session.retry_after_backoff(now_ms)
     }
+
+    pub fn discovery_event_effect(
+        &mut self,
+        event: R10BleGattDiscoveryEvent,
+    ) -> R10BleRuntimeEffect {
+        R10BleRuntimeEffect::Discovery(self.apply_discovery_event(event))
+    }
+
+    pub fn discovery_complete_effect(&mut self) -> R10BleRuntimeEffect {
+        R10BleRuntimeEffect::Discovery(self.complete_discovery())
+    }
+
+    pub fn subscribe_effect(&mut self) -> R10BleRuntimeEffect {
+        self.begin_subscribe()
+            .map(R10BleRuntimeEffect::Write)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn remote_start_effect(&mut self) -> R10BleRuntimeEffect {
+        self.begin_remote_start()
+            .map(R10BleRuntimeEffect::Writes)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn poll_tick_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        self.poll_due_write(now_ms)
+            .map(R10BleRuntimeEffect::Write)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn notify_effect(
+        &mut self,
+        handle: u16,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> R10BleRuntimeEffect {
+        R10BleRuntimeEffect::Notify(self.on_gatt_notify(handle, payload, now_ms))
+    }
+
+    pub fn shutdown_effect(&mut self) -> R10BleRuntimeEffect {
+        self.begin_remote_shutdown()
+            .map(R10BleRuntimeEffect::Writes)
+            .unwrap_or(R10BleRuntimeEffect::None)
+    }
+
+    pub fn disconnect_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        self.disconnect_and_backoff(now_ms);
+        R10BleRuntimeEffect::None
+    }
+
+    pub fn backoff_tick_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
+        if self.retry_after_backoff(now_ms) {
+            R10BleRuntimeEffect::BackoffReady
+        } else {
+            R10BleRuntimeEffect::None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -635,6 +702,146 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_runtime_effect_accumulates_discovery_until_ready() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+
+        assert_eq!(
+            runtime.discovery_event_effect(R10BleGattDiscoveryEvent::Service {
+                start_handle: 1,
+                end_handle: 8,
+            }),
+            R10BleRuntimeEffect::Discovery(R10BleGattDiscoveryStatus::Incomplete(runtime.handles))
+        );
+
+        runtime.discovery_event_effect(R10BleGattDiscoveryEvent::WriteCharacteristic {
+            value_handle: 3,
+        });
+        runtime.discovery_event_effect(R10BleGattDiscoveryEvent::NotifyCharacteristic {
+            value_handle: 5,
+        });
+
+        assert_eq!(
+            runtime.discovery_event_effect(R10BleGattDiscoveryEvent::NotifyCccd { handle: 6 }),
+            R10BleRuntimeEffect::Discovery(R10BleGattDiscoveryStatus::Ready(runtime.handles))
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_effect_subscribe_and_start_emit_ordered_writes() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            runtime.subscribe_effect(),
+            R10BleRuntimeEffect::Write(R10BleGattWrite {
+                handle: 6,
+                payload: R10BleGattWritePayload::Cccd(R10_BLE_NOTIFY_CCCD_ENABLE),
+                mode: R10BleGattWriteMode::WithResponse,
+            })
+        );
+
+        runtime.complete_subscribe();
+
+        match runtime.remote_start_effect() {
+            R10BleRuntimeEffect::Writes(writes) => {
+                assert_eq!(writes[0].handle, 6);
+                assert_eq!(writes[0].payload(), &[0x01, 0x00]);
+                assert_eq!(writes[1].handle, 3);
+                assert_eq!(
+                    writes[1].payload(),
+                    &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+                );
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r10_ble_runtime_effect_poll_tick_emits_only_when_due() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        match runtime.poll_tick_effect(10_000) {
+            R10BleRuntimeEffect::Write(write) => {
+                assert_eq!(write.handle, 3);
+                assert_eq!(
+                    write.payload(),
+                    &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+                );
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+
+        assert_eq!(runtime.poll_tick_effect(10_999), R10BleRuntimeEffect::None);
+    }
+
+    #[test]
+    fn r10_ble_runtime_effect_notify_uses_policy_bridge() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            runtime.notify_effect(5, &MOTION, 10_000),
+            R10BleRuntimeEffect::Notify(R10BleGattNotifyPolicyResult::Accepted(
+                R10RemoteAction::Reader(RustmixReaderAction::NextPage)
+            ))
+        );
+
+        assert_eq!(
+            runtime.notify_effect(7, &MOTION, 11_000),
+            R10BleRuntimeEffect::Notify(R10BleGattNotifyPolicyResult::Rejected(
+                R10BleGattNotifyGate::WrongHandle {
+                    expected: Some(5),
+                    actual: 7,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn r10_ble_runtime_effect_shutdown_emits_stop_then_unsubscribe() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        runtime.complete_remote_start(10_000);
+
+        match runtime.shutdown_effect() {
+            R10BleRuntimeEffect::Writes(writes) => {
+                assert_eq!(writes[0].handle, 3);
+                assert_eq!(
+                    writes[0].payload(),
+                    &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+                );
+                assert_eq!(writes[1].handle, 6);
+                assert_eq!(writes[1].payload(), &[0x00, 0x00]);
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r10_ble_runtime_effect_disconnect_and_backoff_retry() {
+        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
+        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(runtime.disconnect_effect(10_000), R10BleRuntimeEffect::None);
+        assert_eq!(runtime.handles, R10BleGattHandles::unresolved());
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+
+        assert_eq!(
+            runtime.backoff_tick_effect(12_999),
+            R10BleRuntimeEffect::None
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Backoff);
+
+        assert_eq!(
+            runtime.backoff_tick_effect(13_000),
+            R10BleRuntimeEffect::BackoffReady
+        );
+        assert_eq!(runtime.session.state, R10BleTransportState::Scanning);
+    }
 
     #[test]
     fn r10_ble_runtime_reader_remote_starts_idle_with_unresolved_handles() {
