@@ -181,6 +181,28 @@ impl R10BleGattHandles {
             self.start_remote_operation()?,
         ])
     }
+
+    pub fn startup_writes(&self) -> Option<[R10BleGattWrite; 2]> {
+        let ops = self.startup_operations()?;
+        Some([ops[0].to_write(), ops[1].to_write()])
+    }
+
+    pub fn poll_write(&self) -> Option<R10BleGattWrite> {
+        self.poll_remote_operation()
+            .map(R10BleGattOperation::to_write)
+    }
+
+    pub fn stop_write(&self) -> Option<R10BleGattWrite> {
+        self.stop_remote_operation()
+            .map(R10BleGattOperation::to_write)
+    }
+
+    pub fn shutdown_writes(&self) -> Option<[R10BleGattWrite; 2]> {
+        Some([
+            self.stop_remote_operation()?.to_write(),
+            self.disable_notify_operation()?.to_write(),
+        ])
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,6 +357,61 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_startup_writes_are_serialized_in_order() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let writes = handles.startup_writes().unwrap();
+
+        assert_eq!(writes[0].handle, 6);
+        assert_eq!(writes[0].payload(), &[0x01, 0x00]);
+
+        assert_eq!(writes[1].handle, 3);
+        assert_eq!(
+            writes[1].payload(),
+            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_poll_write_uses_poll_packet() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let write = handles.poll_write().unwrap();
+
+        assert_eq!(write.handle, 3);
+        assert_eq!(
+            write.payload(),
+            &[0x02, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07]
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_shutdown_writes_stop_before_unsubscribe() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let writes = handles.shutdown_writes().unwrap();
+
+        assert_eq!(writes[0].handle, 3);
+        assert_eq!(
+            writes[0].payload(),
+            &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+        );
+
+        assert_eq!(writes[1].handle, 6);
+        assert_eq!(writes[1].payload(), &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn r10_ble_gatt_write_sequences_stay_none_until_handles_are_complete() {
+        let incomplete = R10BleGattHandles {
+            notify_cccd_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+
+        assert_eq!(incomplete.startup_writes(), None);
+        assert_eq!(incomplete.poll_write(), None);
+        assert!(incomplete.stop_write().is_some());
+        assert_eq!(incomplete.shutdown_writes(), None);
+    }
 
     #[test]
     fn r10_ble_gatt_cccd_operation_serializes_to_write_payload() {
