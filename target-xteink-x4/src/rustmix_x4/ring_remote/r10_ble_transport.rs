@@ -130,6 +130,63 @@ impl R10BleGattHandles {
     pub fn can_start_remote_mode(&self) -> bool {
         self.is_complete()
     }
+
+    pub fn enable_notify_operation(&self) -> Option<R10BleGattOperation> {
+        self.notify_cccd_handle
+            .filter(|handle| self.contains_handle(*handle))
+            .map(|handle| R10BleGattOperation::WriteCccd {
+                handle,
+                value: R10_BLE_NOTIFY_CCCD_ENABLE,
+            })
+    }
+
+    pub fn disable_notify_operation(&self) -> Option<R10BleGattOperation> {
+        self.notify_cccd_handle
+            .filter(|handle| self.contains_handle(*handle))
+            .map(|handle| R10BleGattOperation::WriteCccd {
+                handle,
+                value: R10_BLE_NOTIFY_CCCD_DISABLE,
+            })
+    }
+
+    pub fn remote_command_operation(&self, command: R10BleCommand) -> Option<R10BleGattOperation> {
+        self.write_value_handle
+            .filter(|handle| self.contains_handle(*handle))
+            .map(|handle| R10BleGattOperation::WriteRemoteCommand { handle, command })
+    }
+
+    pub fn start_remote_operation(&self) -> Option<R10BleGattOperation> {
+        if self.can_start_remote_mode() {
+            self.remote_command_operation(R10BleCommand::StartRemote)
+        } else {
+            None
+        }
+    }
+
+    pub fn poll_remote_operation(&self) -> Option<R10BleGattOperation> {
+        if self.can_start_remote_mode() {
+            self.remote_command_operation(R10BleCommand::PollRemote)
+        } else {
+            None
+        }
+    }
+
+    pub fn stop_remote_operation(&self) -> Option<R10BleGattOperation> {
+        self.remote_command_operation(R10BleCommand::StopRemote)
+    }
+
+    pub fn startup_operations(&self) -> Option<[R10BleGattOperation; 2]> {
+        Some([
+            self.enable_notify_operation()?,
+            self.start_remote_operation()?,
+        ])
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleGattOperation {
+    WriteCccd { handle: u16, value: [u8; 2] },
+    WriteRemoteCommand { handle: u16, command: R10BleCommand },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,6 +282,97 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_gatt_operations_require_resolved_handles() {
+        let unresolved = R10BleGattHandles::unresolved();
+
+        assert_eq!(unresolved.enable_notify_operation(), None);
+        assert_eq!(unresolved.start_remote_operation(), None);
+        assert_eq!(unresolved.poll_remote_operation(), None);
+        assert_eq!(unresolved.stop_remote_operation(), None);
+        assert_eq!(unresolved.startup_operations(), None);
+    }
+
+    #[test]
+    fn r10_ble_gatt_operations_map_to_cccd_and_write_handles() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            handles.enable_notify_operation(),
+            Some(R10BleGattOperation::WriteCccd {
+                handle: 6,
+                value: R10_BLE_NOTIFY_CCCD_ENABLE,
+            })
+        );
+        assert_eq!(
+            handles.disable_notify_operation(),
+            Some(R10BleGattOperation::WriteCccd {
+                handle: 6,
+                value: R10_BLE_NOTIFY_CCCD_DISABLE,
+            })
+        );
+        assert_eq!(
+            handles.start_remote_operation(),
+            Some(R10BleGattOperation::WriteRemoteCommand {
+                handle: 3,
+                command: R10BleCommand::StartRemote,
+            })
+        );
+        assert_eq!(
+            handles.poll_remote_operation(),
+            Some(R10BleGattOperation::WriteRemoteCommand {
+                handle: 3,
+                command: R10BleCommand::PollRemote,
+            })
+        );
+        assert_eq!(
+            handles.stop_remote_operation(),
+            Some(R10BleGattOperation::WriteRemoteCommand {
+                handle: 3,
+                command: R10BleCommand::StopRemote,
+            })
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_startup_operations_subscribe_before_start() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+
+        assert_eq!(
+            handles.startup_operations(),
+            Some([
+                R10BleGattOperation::WriteCccd {
+                    handle: 6,
+                    value: R10_BLE_NOTIFY_CCCD_ENABLE,
+                },
+                R10BleGattOperation::WriteRemoteCommand {
+                    handle: 3,
+                    command: R10BleCommand::StartRemote,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn r10_ble_gatt_start_operation_requires_complete_remote_contract() {
+        let missing_notify_cccd = R10BleGattHandles {
+            notify_cccd_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+
+        assert_eq!(
+            missing_notify_cccd.remote_command_operation(R10BleCommand::StartRemote),
+            Some(R10BleGattOperation::WriteRemoteCommand {
+                handle: 3,
+                command: R10BleCommand::StartRemote,
+            })
+        );
+        assert_eq!(missing_notify_cccd.start_remote_operation(), None);
+        assert_eq!(missing_notify_cccd.poll_remote_operation(), None);
+        assert_eq!(missing_notify_cccd.startup_operations(), None);
+        assert_eq!(missing_notify_cccd.stop_remote_operation().is_some(), true);
+    }
 
     #[test]
     fn r10_ble_gatt_discovery_events_accumulate_complete_handles() {
