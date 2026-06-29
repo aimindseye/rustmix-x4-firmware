@@ -428,6 +428,33 @@ impl R10BleRemoteSession {
         Some(write)
     }
 
+    pub fn begin_remote_start(
+        &mut self,
+        handles: &R10BleGattHandles,
+    ) -> Option<[R10BleGattWrite; 2]> {
+        let writes = handles.startup_writes()?;
+        self.state = R10BleTransportState::StartingRemote;
+        Some(writes)
+    }
+
+    pub fn complete_remote_start(&mut self, now_ms: u64) {
+        self.start_polling(now_ms);
+    }
+
+    pub fn begin_remote_shutdown(
+        &mut self,
+        handles: &R10BleGattHandles,
+    ) -> Option<[R10BleGattWrite; 2]> {
+        let writes = handles.shutdown_writes()?;
+        self.state = R10BleTransportState::Disconnecting;
+        Some(writes)
+    }
+
+    pub fn complete_remote_shutdown(&mut self) {
+        self.state = R10BleTransportState::Idle;
+        self.next_poll_due_ms = 0;
+    }
+
     pub fn start_polling(&mut self, now_ms: u64) {
         self.state = R10BleTransportState::Polling;
         self.next_poll_due_ms = now_ms;
@@ -446,6 +473,75 @@ mod tests {
     use crate::rustmix_x4::ring_remote::r10_remote_policy::R10RemoteAction;
 
     const MOTION: [u8; 16] = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+
+    #[test]
+    fn r10_ble_session_begin_remote_start_returns_startup_writes_and_marks_starting() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        let writes = session.begin_remote_start(&handles).unwrap();
+
+        assert_eq!(session.state, R10BleTransportState::StartingRemote);
+        assert_eq!(writes[0].handle, 6);
+        assert_eq!(writes[0].payload(), &[0x01, 0x00]);
+        assert_eq!(writes[1].handle, 3);
+        assert_eq!(
+            writes[1].payload(),
+            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
+        );
+    }
+
+    #[test]
+    fn r10_ble_session_begin_remote_start_keeps_state_when_handles_incomplete() {
+        let handles = R10BleGattHandles {
+            notify_cccd_handle: None,
+            ..R10BleGattHandles::new(1, 8, 3, 5, 6)
+        };
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        assert_eq!(session.begin_remote_start(&handles), None);
+        assert_eq!(session.state, R10BleTransportState::Idle);
+        assert_eq!(session.next_poll_due_ms, 0);
+    }
+
+    #[test]
+    fn r10_ble_session_complete_remote_start_enters_polling_immediately() {
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.complete_remote_start(10_000);
+
+        assert_eq!(session.state, R10BleTransportState::Polling);
+        assert_eq!(session.next_poll_due_ms, 10_000);
+    }
+
+    #[test]
+    fn r10_ble_session_begin_remote_shutdown_returns_stop_then_unsubscribe() {
+        let handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.start_polling(10_000);
+        let writes = session.begin_remote_shutdown(&handles).unwrap();
+
+        assert_eq!(session.state, R10BleTransportState::Disconnecting);
+        assert_eq!(writes[0].handle, 3);
+        assert_eq!(
+            writes[0].payload(),
+            &[0x02, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08]
+        );
+        assert_eq!(writes[1].handle, 6);
+        assert_eq!(writes[1].payload(), &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn r10_ble_session_complete_remote_shutdown_returns_idle_and_clears_timer() {
+        let mut session = R10BleRemoteSession::reader_remote(3500);
+
+        session.start_polling(10_000);
+        session.complete_remote_shutdown();
+
+        assert_eq!(session.state, R10BleTransportState::Idle);
+        assert_eq!(session.next_poll_due_ms, 0);
+    }
 
     #[test]
     fn r10_ble_session_poll_due_write_requires_polling_state() {
