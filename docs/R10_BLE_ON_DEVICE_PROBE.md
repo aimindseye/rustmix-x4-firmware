@@ -175,3 +175,20 @@ requests until the task is stopped or reconfigured. This is the boundary that
 the next hardware-facing deliverable can attach to `esp-radio` / `trouble-host`
 without changing the Reader policy or packet contracts.
 
+
+## Device-task test visibility and start request
+
+The host test harness now includes the `r10_ble_device_task` module so its
+contract tests run under `cargo test`.
+
+`R10BleDeviceTaskState::start_request()` is the one-shot boundary for the future
+hardware-facing BLE task:
+
+    Disabled      -> None
+    ProbeOnly     -> Some(StartProbeOnly)
+    ReaderRemote  -> Some(StartReaderRemote)
+
+A second call returns `None` until the task is stopped or reconfigured. This
+keeps BLE startup explicit and prevents accidental repeated scan/connect startup
+loops.
+

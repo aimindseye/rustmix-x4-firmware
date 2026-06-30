@@ -92,6 +92,29 @@ impl R10BleDeviceTaskPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskStartRequest {
+    pub action: R10BleDeviceTaskAction,
+    pub config: R10BleRuntimeConfig,
+}
+
+impl R10BleDeviceTaskStartRequest {
+    pub const fn should_run_probe(&self) -> bool {
+        matches!(self.action, R10BleDeviceTaskAction::StartProbeOnly)
+    }
+
+    pub const fn should_run_reader_remote(&self) -> bool {
+        matches!(self.action, R10BleDeviceTaskAction::StartReaderRemote)
+    }
+
+    pub const fn should_start_ble(&self) -> bool {
+        self.action.starts_ble()
+    }
+
+    pub const fn reader_debounce_ms(&self) -> u64 {
+        self.config.reader_debounce_ms
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
     pub started: bool,
@@ -123,6 +146,19 @@ impl R10BleDeviceTaskState {
 
         self.started = self.plan.should_start_ble();
         self.plan.action
+    }
+
+    pub fn start_request(&mut self) -> Option<R10BleDeviceTaskStartRequest> {
+        let action = self.start_action();
+
+        if action.starts_ble() {
+            Some(R10BleDeviceTaskStartRequest {
+                action,
+                config: self.plan.config,
+            })
+        } else {
+            None
+        }
     }
 
     pub fn stop(&mut self) {
@@ -269,5 +305,48 @@ mod tests {
         assert_eq!(plan.config.scan_target, target);
         assert_eq!(plan.reader_debounce_ms(), 4_000);
         assert_eq!(plan.action, R10BleDeviceTaskAction::StartReaderRemote);
+    }
+    #[test]
+    fn r10_ble_device_task_disabled_start_request_is_none() {
+        let mut state = R10BleDeviceTaskState::default();
+
+        assert_eq!(state.start_request(), None);
+        assert!(!state.is_started());
+    }
+
+    #[test]
+    fn r10_ble_device_task_probe_only_start_request_is_one_shot() {
+        let mut state = R10BleDeviceTaskState::new(R10BleRuntimeConfig::probe_only_live_r10());
+
+        let request = state
+            .start_request()
+            .expect("ProbeOnly should produce one start request");
+
+        assert_eq!(request.action, R10BleDeviceTaskAction::StartProbeOnly);
+        assert!(request.should_start_ble());
+        assert!(request.should_run_probe());
+        assert!(!request.should_run_reader_remote());
+        assert!(state.is_started());
+
+        assert_eq!(state.start_request(), None);
+        assert!(state.is_started());
+    }
+
+    #[test]
+    fn r10_ble_device_task_reader_remote_start_request_preserves_debounce() {
+        let mut state = R10BleDeviceTaskState::new(R10BleRuntimeConfig::reader_remote_live_r10());
+
+        let request = state
+            .start_request()
+            .expect("ReaderRemote should produce one start request");
+
+        assert_eq!(request.action, R10BleDeviceTaskAction::StartReaderRemote);
+        assert!(request.should_start_ble());
+        assert!(!request.should_run_probe());
+        assert!(request.should_run_reader_remote());
+        assert_eq!(
+            request.reader_debounce_ms(),
+            R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS
+        );
     }
 }

@@ -56,7 +56,7 @@ pub use r10_ble_host::{
 };
 
 pub use r10_ble_device_task::{
-    R10BleDeviceTaskAction, R10BleDeviceTaskPlan, R10BleDeviceTaskState,
-    r10_ble_device_task_default_config, r10_ble_device_task_probe_config,
+    R10BleDeviceTaskAction, R10BleDeviceTaskPlan, R10BleDeviceTaskStartRequest,
+    R10BleDeviceTaskState, r10_ble_device_task_default_config, r10_ble_device_task_probe_config,
     r10_ble_device_task_reader_remote_config,
 };
