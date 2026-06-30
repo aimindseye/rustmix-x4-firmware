@@ -686,7 +686,6 @@ impl R10BlePendingWriteQueue {
             cursor: 0,
         }
     }
-
     pub fn from_three(writes: [R10BlePendingWrite; 3]) -> Self {
         Self {
             writes: [Some(writes[0]), Some(writes[1]), Some(writes[2])],
@@ -752,7 +751,7 @@ pub enum R10BleRuntimeEffect {
     WriteResult(R10BleWriteResult),
     PendingWrite(R10BlePendingWrite),
     PendingWrites([R10BlePendingWrite; 2]),
-    PendingStartupWrites([R10BlePendingWrite; 3]),
+    PendingStartupWrites([R10BlePendingWrite; 2]),
     PendingWriteQueue(R10BlePendingWriteQueue),
     Discovery(R10BleGattDiscoveryStatus),
     Write(R10BleGattWrite),
@@ -891,17 +890,26 @@ impl R10BleRemoteRuntime {
             .map(R10BleRuntimeEffect::PendingWrite)
             .unwrap_or(R10BleRuntimeEffect::None)
     }
+    pub fn startup_pending_writes(&mut self) -> Option<[R10BlePendingWrite; 2]> {
+        let handles = self.handles;
+        let subscribe = self.session.begin_subscribe(&handles)?;
 
-    pub fn startup_pending_writes(&mut self) -> Option<[R10BlePendingWrite; 3]> {
-        let subscribe = self.begin_subscribe()?;
-        self.complete_subscribe();
-
-        let startup = self.begin_remote_start()?;
+        // begin_remote_start() returns the lower-level GATT startup pair:
+        // [CCCD enable, remote-start command]. The runtime startup queue
+        // already emitted CCCD enable as the Subscribe phase, so keep only
+        // the remote-start command here.
+        self.session.complete_subscribe();
+        let [_duplicate_cccd_enable, remote_start] = self.session.begin_remote_start(&handles)?;
 
         Some([
-            R10BlePendingWrite::new(R10BleWritePhase::Subscribe, subscribe),
-            R10BlePendingWrite::new(R10BleWritePhase::RemoteStart, startup[0]),
-            R10BlePendingWrite::new(R10BleWritePhase::RemoteStart, startup[1]),
+            R10BlePendingWrite {
+                phase: R10BleWritePhase::Subscribe,
+                write: subscribe,
+            },
+            R10BlePendingWrite {
+                phase: R10BleWritePhase::RemoteStart,
+                write: remote_start,
+            },
         ])
     }
 
@@ -939,12 +947,13 @@ impl R10BleRemoteRuntime {
             .map(R10BleRuntimeEffect::PendingWriteQueue)
             .unwrap_or(R10BleRuntimeEffect::None)
     }
-
     pub fn startup_pending_queue_effect(&mut self) -> R10BleRuntimeEffect {
-        self.startup_pending_writes()
-            .map(R10BlePendingWriteQueue::from_three)
-            .map(R10BleRuntimeEffect::PendingWriteQueue)
-            .unwrap_or(R10BleRuntimeEffect::None)
+        match self.startup_pending_writes() {
+            Some(writes) => {
+                R10BleRuntimeEffect::PendingWriteQueue(R10BlePendingWriteQueue::from_two(writes))
+            }
+            None => R10BleRuntimeEffect::None,
+        }
     }
 
     pub fn poll_pending_queue_effect(&mut self, now_ms: u64) -> R10BleRuntimeEffect {
@@ -1194,7 +1203,6 @@ impl R10BleRuntimeConfig {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,66 +1281,82 @@ mod tests {
         assert!(queue.is_done());
         assert_eq!(queue.remaining_len(), 0);
     }
-
     #[test]
     fn r10_ble_pending_write_queue_from_three_preserves_order() {
         let writes = [
-            R10BlePendingWrite::new(
-                R10BleWritePhase::Subscribe,
-                R10BleGattHandles::new(1, 8, 3, 5, 6)
-                    .enable_notify_operation()
-                    .unwrap()
-                    .to_write(),
-            ),
-            R10BlePendingWrite::new(
-                R10BleWritePhase::RemoteStart,
-                R10BleGattHandles::new(1, 8, 3, 5, 6)
-                    .enable_notify_operation()
-                    .unwrap()
-                    .to_write(),
-            ),
-            R10BlePendingWrite::new(
-                R10BleWritePhase::RemoteStart,
-                R10BleGattHandles::new(1, 8, 3, 5, 6)
-                    .start_remote_operation()
-                    .unwrap()
-                    .to_write(),
-            ),
+            R10BlePendingWrite {
+                phase: R10BleWritePhase::Subscribe,
+                write: R10BleGattWrite {
+                    handle: 1,
+                    payload: R10BleGattWritePayload::RemoteCommand([
+                        0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06,
+                    ]),
+                    mode: R10BleGattWriteMode::WithResponse,
+                },
+            },
+            R10BlePendingWrite {
+                phase: R10BleWritePhase::RemoteStart,
+                write: R10BleGattWrite {
+                    handle: 2,
+                    payload: R10BleGattWritePayload::RemoteCommand([
+                        0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06,
+                    ]),
+                    mode: R10BleGattWriteMode::WithoutResponse,
+                },
+            },
+            R10BlePendingWrite {
+                phase: R10BleWritePhase::RemoteStart,
+                write: R10BleGattWrite {
+                    handle: 3,
+                    payload: R10BleGattWritePayload::RemoteCommand([
+                        0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06,
+                    ]),
+                    mode: R10BleGattWriteMode::WithoutResponse,
+                },
+            },
         ];
 
-        let mut queue = R10BlePendingWriteQueue::from_three(writes);
+        let queue = R10BlePendingWriteQueue::from_three(writes);
 
         assert_eq!(queue.len(), 3);
+        assert_eq!(queue.cursor(), 0);
+        assert_eq!(queue.remaining_len(), 3);
+        assert_eq!(queue.pending_at(0), Some(writes[0]));
+        assert_eq!(queue.pending_at(1), Some(writes[1]));
+        assert_eq!(queue.pending_at(2), Some(writes[2]));
+        assert_eq!(queue.pending_at(3), None);
         assert_eq!(queue.current(), Some(writes[0]));
-        assert_eq!(queue.advance(), Some(writes[1]));
-        assert_eq!(queue.advance(), Some(writes[2]));
-        assert_eq!(queue.advance(), None);
-        assert!(queue.is_done());
     }
-
     #[test]
     fn r10_ble_runtime_startup_pending_queue_effect_emits_cursor_queue() {
-        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
-        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut runtime =
+            R10BleRemoteRuntime::reader_remote(R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS);
+        runtime.handles = R10BleGattHandles::new(
+            R10_BLE_LIVE_SERVICE_START_HANDLE,
+            R10_BLE_LIVE_SERVICE_END_HANDLE,
+            R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        );
 
-        match runtime.startup_pending_queue_effect() {
-            R10BleRuntimeEffect::PendingWriteQueue(mut queue) => {
-                assert_eq!(queue.len(), 3);
-                assert_eq!(queue.current().unwrap().phase, R10BleWritePhase::Subscribe);
-                assert_eq!(
-                    queue.advance().unwrap().phase,
-                    R10BleWritePhase::RemoteStart
-                );
-                assert_eq!(
-                    queue.advance().unwrap().phase,
-                    R10BleWritePhase::RemoteStart
-                );
-                assert_eq!(queue.advance(), None);
+        let effect = runtime.startup_pending_queue_effect();
+
+        match effect {
+            R10BleRuntimeEffect::PendingWriteQueue(queue) => {
+                assert_eq!(queue.len(), 2);
+                assert_eq!(queue.cursor(), 0);
+                assert_eq!(queue.remaining_len(), 2);
+
+                let first = queue.pending_at(0).expect("subscribe write");
+                assert_eq!(first.phase, R10BleWritePhase::Subscribe);
+                assert_eq!(first.write.handle, R10_BLE_LIVE_NOTIFY_CCCD_HANDLE);
+
+                let second = queue.pending_at(1).expect("remote start write");
+                assert_eq!(second.phase, R10BleWritePhase::RemoteStart);
+                assert_eq!(second.write.handle, R10_BLE_LIVE_WRITE_VALUE_HANDLE);
             }
-            other => panic!("unexpected effect: {other:?}"),
+            other => panic!("unexpected startup queue effect: {other:?}"),
         }
-
-        assert_eq!(runtime.session.state, R10BleTransportState::StartingRemote);
     }
 
     #[test]
@@ -1397,44 +1421,55 @@ mod tests {
 
         assert_eq!(runtime.session.state, R10BleTransportState::Disconnecting);
     }
-
     #[test]
     fn r10_ble_runtime_startup_pending_writes_queue_subscribe_then_start() {
-        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
-        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+        let mut runtime =
+            R10BleRemoteRuntime::reader_remote(R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS);
+        runtime.handles = R10BleGattHandles::new(
+            R10_BLE_LIVE_SERVICE_START_HANDLE,
+            R10_BLE_LIVE_SERVICE_END_HANDLE,
+            R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        );
 
-        let writes = runtime.startup_pending_writes().unwrap();
+        let writes = runtime
+            .startup_pending_writes()
+            .expect("complete live handles should produce startup writes");
 
-        assert_eq!(runtime.session.state, R10BleTransportState::StartingRemote);
+        assert_eq!(writes.len(), 2);
 
         assert_eq!(writes[0].phase, R10BleWritePhase::Subscribe);
-        assert_eq!(writes[0].handle(), 6);
-        assert_eq!(writes[0].payload(), &[0x01, 0x00]);
+        assert_eq!(writes[0].write.handle, R10_BLE_LIVE_NOTIFY_CCCD_HANDLE);
+        assert_eq!(writes[0].write.mode, R10BleGattWriteMode::WithResponse);
 
         assert_eq!(writes[1].phase, R10BleWritePhase::RemoteStart);
-        assert_eq!(writes[1].handle(), 6);
-        assert_eq!(writes[1].payload(), &[0x01, 0x00]);
-
-        assert_eq!(writes[2].phase, R10BleWritePhase::RemoteStart);
-        assert_eq!(writes[2].handle(), 3);
-        assert_eq!(
-            writes[2].payload(),
-            &[0x02, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x06]
-        );
+        assert_eq!(writes[1].write.handle, R10_BLE_LIVE_WRITE_VALUE_HANDLE);
+        assert_eq!(writes[1].write.mode, R10BleGattWriteMode::WithoutResponse);
     }
-
     #[test]
-    fn r10_ble_runtime_startup_pending_writes_effect_emits_three_step_queue() {
-        let mut runtime = R10BleRemoteRuntime::reader_remote(3500);
-        runtime.handles = R10BleGattHandles::new(1, 8, 3, 5, 6);
+    fn r10_ble_runtime_startup_pending_writes_effect_emits_two_step_queue() {
+        let mut runtime =
+            R10BleRemoteRuntime::reader_remote(R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS);
+        runtime.handles = R10BleGattHandles::new(
+            R10_BLE_LIVE_SERVICE_START_HANDLE,
+            R10_BLE_LIVE_SERVICE_END_HANDLE,
+            R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        );
 
-        match runtime.startup_pending_writes_effect() {
+        let effect = runtime.startup_pending_writes_effect();
+
+        match effect {
             R10BleRuntimeEffect::PendingStartupWrites(writes) => {
+                assert_eq!(writes.len(), 2);
                 assert_eq!(writes[0].phase, R10BleWritePhase::Subscribe);
+                assert_eq!(writes[0].write.handle, R10_BLE_LIVE_NOTIFY_CCCD_HANDLE);
                 assert_eq!(writes[1].phase, R10BleWritePhase::RemoteStart);
-                assert_eq!(writes[2].phase, R10BleWritePhase::RemoteStart);
+                assert_eq!(writes[1].write.handle, R10_BLE_LIVE_WRITE_VALUE_HANDLE);
             }
-            other => panic!("unexpected effect: {other:?}"),
+            other => panic!("unexpected startup effect: {other:?}"),
         }
     }
 
@@ -2816,6 +2851,28 @@ mod tests {
         session.mark_poll_sent(10_000);
         assert!(!session.should_poll(10_999));
         assert!(session.should_poll(11_000));
+    }
+    #[test]
+    fn r10_ble_runtime_startup_queue_deduplicates_cccd_enable() {
+        let mut runtime =
+            R10BleRemoteRuntime::reader_remote(R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS);
+        runtime.handles = R10BleGattHandles::new(
+            R10_BLE_LIVE_SERVICE_START_HANDLE,
+            R10_BLE_LIVE_SERVICE_END_HANDLE,
+            R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        );
+
+        let writes = runtime
+            .startup_pending_writes()
+            .expect("live R10 handles should produce startup writes");
+
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].phase, R10BleWritePhase::Subscribe);
+        assert_eq!(writes[0].write.handle, R10_BLE_LIVE_NOTIFY_CCCD_HANDLE);
+        assert_eq!(writes[1].phase, R10BleWritePhase::RemoteStart);
+        assert_eq!(writes[1].write.handle, R10_BLE_LIVE_WRITE_VALUE_HANDLE);
     }
 }
 

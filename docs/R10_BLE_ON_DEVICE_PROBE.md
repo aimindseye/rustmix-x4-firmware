@@ -141,3 +141,20 @@ Start decisions:
 future Reader page-turn mode. This keeps diagnostic BLE behavior separate from
 normal Reader remote-control behavior.
 
+
+## Startup queue de-duplication
+
+The lower-level GATT helper still documents the full startup write pair:
+
+    CCCD enable
+    remote-start command
+
+The runtime startup queue de-duplicates that path. It emits only two pending
+writes:
+
+    Subscribe      -> CCCD enable
+    RemoteStart    -> remote-start command
+
+This avoids writing CCCD enable twice during the Reader/Probe startup path while
+preserving the lower-level operation-order contract.
+
