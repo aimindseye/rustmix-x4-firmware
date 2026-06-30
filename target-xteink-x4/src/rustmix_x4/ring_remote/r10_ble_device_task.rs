@@ -198,12 +198,16 @@ impl R10BleDeviceTaskMonitorEvent {
     }
 
     pub fn is_monitor_safe(&self) -> bool {
-        r10_ble_device_task_monitor_label_is_safe(self.prefix_label())
+        r10_ble_device_task_monitor_prefix_is_safe(self.prefix_label())
             && r10_ble_device_task_monitor_label_is_safe(self.action_label())
             && r10_ble_device_task_monitor_label_is_safe(self.lifecycle_label())
             && r10_ble_device_task_monitor_label_is_safe(self.reader_label())
             && r10_ble_device_task_monitor_label_is_safe(self.terminal_label())
     }
+}
+
+pub fn r10_ble_device_task_monitor_prefix_is_safe(label: &str) -> bool {
+    label == "r10_ble_task"
 }
 
 pub fn r10_ble_device_task_monitor_label_is_safe(label: &str) -> bool {
@@ -873,5 +877,16 @@ mod tests {
         assert!(!r10_ble_device_task_monitor_label_is_safe("start-scan"));
         assert!(!r10_ble_device_task_monitor_label_is_safe("start scan"));
         assert!(!r10_ble_device_task_monitor_label_is_safe("scan1"));
+    }
+    #[test]
+    fn r10_ble_device_task_monitor_prefix_allows_fixed_r10_label_only() {
+        assert!(r10_ble_device_task_monitor_prefix_is_safe("r10_ble_task"));
+
+        assert!(!r10_ble_device_task_monitor_prefix_is_safe(""));
+        assert!(!r10_ble_device_task_monitor_prefix_is_safe("r11_ble_task"));
+        assert!(!r10_ble_device_task_monitor_prefix_is_safe("r10-ble-task"));
+        assert!(!r10_ble_device_task_monitor_prefix_is_safe(
+            "r10_ble_task_extra"
+        ));
     }
 }
