@@ -325,3 +325,26 @@ The deploy script validates this runtime contract before flashing:
 `ReaderRemote` remains explicit opt-in and is represented by
 `reader_remote_manual()` for later hardware validation.
 
+
+## Runtime serial record renderer
+
+`R10BleDeviceTaskX4RuntimeSerialRecord` converts runtime log-line metadata into
+monitor-safe key/value fields without allocation. The record contains:
+
+    event
+    kind
+    mode
+    source
+    lifecycle
+    command
+    outcome
+    reader
+    status
+
+The deploy script validates this renderer before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_device_task_x4_serial -- --nocapture
+
+ProbeOnly records remain `reader_off`; ReaderRemote records are `reader_on` only
+for the explicit opt-in mode.
+

@@ -1463,6 +1463,138 @@ impl R10BleDeviceTaskX4RuntimeTrigger {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4RuntimeSerialField {
+    pub key: &'static str,
+    pub value: &'static str,
+}
+
+impl R10BleDeviceTaskX4RuntimeSerialField {
+    pub const fn new(key: &'static str, value: &'static str) -> Self {
+        Self { key, value }
+    }
+
+    pub fn is_monitor_safe(&self) -> bool {
+        r10_ble_device_task_monitor_label_is_safe(self.key)
+            && r10_ble_device_task_monitor_label_is_safe(self.value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4RuntimeSerialRecord {
+    pub fields: [R10BleDeviceTaskX4RuntimeSerialField; 9],
+}
+
+impl R10BleDeviceTaskX4RuntimeSerialRecord {
+    pub const FIELD_COUNT: usize = 9;
+
+    pub fn from_line(line: R10BleDeviceTaskX4RuntimeSerialLogLine) -> Self {
+        Self {
+            fields: [
+                R10BleDeviceTaskX4RuntimeSerialField::new("event", line.prefix_label()),
+                R10BleDeviceTaskX4RuntimeSerialField::new("kind", line.kind_label()),
+                R10BleDeviceTaskX4RuntimeSerialField::new("mode", line.mode),
+                R10BleDeviceTaskX4RuntimeSerialField::new("source", line.source),
+                R10BleDeviceTaskX4RuntimeSerialField::new("lifecycle", line.lifecycle),
+                R10BleDeviceTaskX4RuntimeSerialField::new("command", line.command),
+                R10BleDeviceTaskX4RuntimeSerialField::new("outcome", line.outcome),
+                R10BleDeviceTaskX4RuntimeSerialField::new("reader", line.reader),
+                R10BleDeviceTaskX4RuntimeSerialField::new("status", line.status_label()),
+            ],
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        Self::FIELD_COUNT
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+
+    pub fn field_at(&self, index: usize) -> Option<R10BleDeviceTaskX4RuntimeSerialField> {
+        if index < Self::FIELD_COUNT {
+            Some(self.fields[index])
+        } else {
+            None
+        }
+    }
+
+    pub fn value_for_key(&self, key: &str) -> Option<&'static str> {
+        let mut index = 0;
+
+        while index < Self::FIELD_COUNT {
+            let field = self.fields[index];
+
+            if field.key == key {
+                return Some(field.value);
+            }
+
+            index += 1;
+        }
+
+        None
+    }
+
+    pub fn event_value(&self) -> &'static str {
+        self.value_for_key("event").unwrap_or("none")
+    }
+
+    pub fn kind_value(&self) -> &'static str {
+        self.value_for_key("kind").unwrap_or("none")
+    }
+
+    pub fn status_value(&self) -> &'static str {
+        self.value_for_key("status").unwrap_or("none")
+    }
+
+    pub fn is_monitor_safe(&self) -> bool {
+        let mut index = 0;
+
+        while index < Self::FIELD_COUNT {
+            if !self.fields[index].is_monitor_safe() {
+                return false;
+            }
+
+            index += 1;
+        }
+
+        true
+    }
+}
+
+impl R10BleDeviceTaskX4RuntimeTrigger {
+    pub fn profile_serial_record(&self) -> R10BleDeviceTaskX4RuntimeSerialRecord {
+        R10BleDeviceTaskX4RuntimeSerialRecord::from_line(self.profile_log_line())
+    }
+
+    pub fn trigger_serial_record(&self) -> R10BleDeviceTaskX4RuntimeSerialRecord {
+        R10BleDeviceTaskX4RuntimeSerialRecord::from_line(self.trigger_log_line())
+    }
+
+    pub fn command_serial_record_at(
+        &self,
+        index: usize,
+    ) -> Option<R10BleDeviceTaskX4RuntimeSerialRecord> {
+        self.command_log_line_at(index)
+            .map(R10BleDeviceTaskX4RuntimeSerialRecord::from_line)
+    }
+
+    pub fn transcript_serial_record(
+        &self,
+        entry: R10BleDeviceTaskHardwareTranscriptEntry,
+    ) -> R10BleDeviceTaskX4RuntimeSerialRecord {
+        R10BleDeviceTaskX4RuntimeSerialRecord::from_line(self.transcript_log_line(entry))
+    }
+
+    pub fn report_serial_record(
+        &self,
+        report: R10BleDeviceTaskHardwareMockExecutionReport,
+    ) -> R10BleDeviceTaskX4RuntimeSerialRecord {
+        R10BleDeviceTaskX4RuntimeSerialRecord::from_line(self.report_log_line(report))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
     pub started: bool,
@@ -2903,5 +3035,175 @@ mod tests {
         assert_eq!(line.kind_label(), "profile");
         assert_eq!(line.status_label(), "ready");
         assert!(line.is_monitor_safe());
+    }
+    #[test]
+    fn r10_ble_device_task_x4_serial_record_keys_are_stable_and_safe() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let record = trigger.profile_serial_record();
+
+        assert_eq!(record.len(), 9);
+        assert!(!record.is_empty());
+
+        let keys = [
+            "event",
+            "kind",
+            "mode",
+            "source",
+            "lifecycle",
+            "command",
+            "outcome",
+            "reader",
+            "status",
+        ];
+
+        for (index, key) in keys.iter().enumerate() {
+            let field = record.field_at(index).unwrap();
+
+            assert_eq!(field.key, *key);
+            assert!(field.is_monitor_safe());
+        }
+
+        assert_eq!(record.field_at(9), None);
+        assert!(record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_profile_record_is_monitor_safe() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let record = trigger.profile_serial_record();
+
+        assert_eq!(record.event_value(), "ble_runtime");
+        assert_eq!(record.kind_value(), "profile");
+        assert_eq!(record.value_for_key("mode"), Some("probe_only"));
+        assert_eq!(record.value_for_key("source"), Some("deploy_script"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+        assert_eq!(record.status_value(), "ready");
+        assert_eq!(record.value_for_key("missing"), None);
+        assert!(record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_trigger_record_is_running_for_probe_only() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let record = trigger.trigger_serial_record();
+
+        assert_eq!(record.kind_value(), "trigger");
+        assert_eq!(record.value_for_key("mode"), Some("probe_only"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+        assert_eq!(record.status_value(), "running");
+        assert!(record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_command_records_cover_scan_and_notify() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+
+        let scan = trigger.command_serial_record_at(0).unwrap();
+        let notify = trigger.command_serial_record_at(7).unwrap();
+        let timeout = trigger.command_serial_record_at(8);
+
+        assert_eq!(scan.kind_value(), "command");
+        assert_eq!(scan.value_for_key("lifecycle"), Some("start_scan"));
+        assert_eq!(scan.value_for_key("command"), Some("scan_start"));
+        assert_eq!(scan.value_for_key("outcome"), Some("pending"));
+        assert_eq!(scan.status_value(), "ready");
+        assert!(scan.is_monitor_safe());
+
+        assert_eq!(notify.value_for_key("lifecycle"), Some("notify"));
+        assert_eq!(notify.value_for_key("command"), Some("handle_notify"));
+        assert_eq!(notify.value_for_key("reader"), Some("reader_off"));
+        assert!(notify.is_monitor_safe());
+
+        assert_eq!(timeout, None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_probe_transcript_record_is_log_only() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = trigger.execute_probe_only_mock(&mut transcript).unwrap();
+        let entry = transcript.last().unwrap();
+        let record = trigger.transcript_serial_record(entry);
+        let report_record = trigger.report_serial_record(report);
+
+        assert_eq!(record.kind_value(), "transcript");
+        assert_eq!(record.value_for_key("lifecycle"), Some("notify"));
+        assert_eq!(record.value_for_key("command"), Some("handle_notify"));
+        assert_eq!(record.value_for_key("outcome"), Some("ok"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+        assert_eq!(record.status_value(), "ok");
+        assert!(record.is_monitor_safe());
+
+        assert_eq!(report_record.kind_value(), "report");
+        assert_eq!(report_record.value_for_key("outcome"), Some("ok"));
+        assert_eq!(report_record.status_value(), "ok");
+        assert!(report_record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_reader_remote_notify_record_is_reader_on() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::reader_remote_manual();
+        let runner = trigger.runner_plan().unwrap();
+
+        let entry = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Ok)
+            .unwrap();
+        let record = trigger.transcript_serial_record(entry);
+
+        assert_eq!(record.value_for_key("mode"), Some("reader_remote"));
+        assert_eq!(record.value_for_key("source"), Some("manual"));
+        assert_eq!(record.value_for_key("lifecycle"), Some("notify"));
+        assert_eq!(record.value_for_key("command"), Some("handle_notify"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_on"));
+        assert_eq!(record.status_value(), "ok");
+        assert!(entry.should_emit_reader_event());
+        assert!(record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_retry_report_record_is_retry() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let runner = trigger.runner_plan().unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::timeout_notify()
+            .execute_runner(&runner, &mut transcript);
+        let record = trigger.report_serial_record(report);
+
+        assert!(report.retry_requested);
+        assert_eq!(record.kind_value(), "report");
+        assert_eq!(record.value_for_key("outcome"), Some("timeout"));
+        assert_eq!(record.status_value(), "retry");
+        assert!(record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_disabled_boot_record_is_skipped() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::disabled_boot();
+
+        let profile = trigger.profile_serial_record();
+        let trigger_record = trigger.trigger_serial_record();
+
+        assert_eq!(profile.value_for_key("mode"), Some("disabled"));
+        assert_eq!(profile.value_for_key("source"), Some("boot"));
+        assert_eq!(profile.value_for_key("reader"), Some("reader_off"));
+        assert_eq!(profile.status_value(), "skipped");
+        assert!(profile.is_monitor_safe());
+
+        assert_eq!(trigger_record.kind_value(), "trigger");
+        assert_eq!(trigger_record.status_value(), "skipped");
+        assert!(trigger_record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_serial_record_rejects_unsafe_field_values() {
+        let safe = R10BleDeviceTaskX4RuntimeSerialField::new("mode", "probe_only");
+        let unsafe_value = R10BleDeviceTaskX4RuntimeSerialField::new("mode", "probe only");
+        let unsafe_key = R10BleDeviceTaskX4RuntimeSerialField::new("bad key", "probe_only");
+
+        assert!(safe.is_monitor_safe());
+        assert!(!unsafe_value.is_monitor_safe());
+        assert!(!unsafe_key.is_monitor_safe());
     }
 }

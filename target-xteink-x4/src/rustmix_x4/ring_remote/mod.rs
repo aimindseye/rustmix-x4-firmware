@@ -71,3 +71,7 @@ pub use self::r10_ble_device_task::{
     R10BleDeviceTaskX4RuntimeStatus, R10BleDeviceTaskX4RuntimeTrigger,
     R10BleDeviceTaskX4RuntimeTriggerSource,
 };
+
+pub use self::r10_ble_device_task::{
+    R10BleDeviceTaskX4RuntimeSerialField, R10BleDeviceTaskX4RuntimeSerialRecord,
+};
