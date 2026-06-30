@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! Ring remote support for Rustmix X4.
 //!
 //! r1 intentionally contains only transport-independent protocol and policy.
@@ -12,6 +13,7 @@ pub mod r10_ble_esp32c3_runner;
 pub mod r10_ble_host;
 pub mod r10_ble_probe;
 pub mod r10_ble_reader_remote_guard;
+pub mod r10_ble_settings_ui;
 pub mod r10_ble_transport;
 pub mod r10_input_bridge;
 pub mod r10_protocol;
@@ -127,3 +129,14 @@ pub use r10_ble_reader_remote_guard::{
     r10_ble_x4_emit_reader_remote_guard_startup_log,
     r10_ble_x4_reader_remote_try_enqueue_guarded_notify,
 };
+
+pub use r10_ble_settings_ui::{
+    R10_BLE_SETTINGS_CONTROL_LABEL, R10_BLE_SETTINGS_FILE_NAME, R10_BLE_SETTINGS_PATH,
+    R10_BLE_SETTINGS_RECORD_PREFIX, R10_BLE_SETTINGS_TAB, R10BleSettingsAction,
+    R10BleSettingsController, R10BleSettingsEventRecord, R10BleSettingsMode,
+    R10BleSettingsPersistenceRecord, R10BleSettingsRow, R10BleSettingsScreen, R10BleSettingsStatus,
+    R10BleSettingsTransition,
+};
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub use r10_ble_settings_ui::r10_ble_x4_emit_settings_status_startup_log;

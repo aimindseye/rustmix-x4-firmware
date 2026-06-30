@@ -8,6 +8,9 @@ use core::fmt::Write as _;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::PrimitiveStyle};
 
+use crate::rustmix_x4::ring_remote::{
+    R10BleSettingsAction, R10BleSettingsController, R10BleSettingsMode,
+};
 use crate::rustmix_x4::ui::page_shell::DEFAULT_SETTINGS_TABS;
 use crate::rustmix_x4::x4_apps::apps::{
     App, AppContext, AppId, PendingSetting, Transition, reader_state,
@@ -30,6 +33,9 @@ const ROW_STRIDE: u16 = ROW_H + ROW_GAP;
 const FIXED_INTERFACE_FONT_LABEL: &str = "Inter";
 pub const SETTINGS_CROSSINK_VISUAL_MARKER: &str = "crossink-visual-parity-rustmix-ok";
 pub const SETTINGS_CROSSINK_RENDERER_MARKER: &str = "crossink-settings-renderer-rustmix-ok";
+pub const SETTINGS_R10_BLE_CONTROLS_ROW_MARKER: &str = "settings-controls-r10-ble-remote-row-ok";
+pub const SETTINGS_R10_BLE_SECTION_LABEL: &str = "R10 BLE REMOTE";
+pub const SETTINGS_R10_BLE_ROW_LABEL: &str = "R10 BLE Remote";
 pub const SETTINGS_CROSSINK_VISUAL_PARITY_MARKER: &str =
     "crossink-settings-visual-parity-rustmix-ok";
 
@@ -90,6 +96,7 @@ enum SettingsRowKind {
     DeviceBattery,
     DeviceSleepTimeout,
     DeviceButtonTest,
+    R10BleRemoteMode,
     AboutOs,
     AboutDevice,
     AboutBuild,
@@ -180,7 +187,15 @@ const READER_ROWS: [SettingsRow; 12] = [
     },
 ];
 
-const CONTROLS_ROWS: [SettingsRow; 10] = [
+const CONTROLS_ROWS: [SettingsRow; 12] = [
+    SettingsRow {
+        label: SETTINGS_R10_BLE_SECTION_LABEL,
+        kind: SettingsRowKind::Section(SETTINGS_R10_BLE_SECTION_LABEL),
+    },
+    SettingsRow {
+        label: SETTINGS_R10_BLE_ROW_LABEL,
+        kind: SettingsRowKind::R10BleRemoteMode,
+    },
     SettingsRow {
         label: "POWER BUTTON",
         kind: SettingsRowKind::Section("POWER BUTTON"),
@@ -282,6 +297,7 @@ impl Default for SettingsApp {
 
 pub struct SettingsApp {
     settings: SystemSettings,
+    r10_ble_settings: R10BleSettingsController,
     wifi: WifiConfig,
     selected_tab: u8,
     selected: usize,
@@ -314,6 +330,7 @@ impl SettingsApp {
         let uf = fonts::UiFonts::for_size(0);
         Self {
             settings: SystemSettings::defaults(),
+            r10_ble_settings: R10BleSettingsController::new(),
             wifi: WifiConfig::empty(),
             selected_tab: 0,
             selected: 0,
@@ -757,6 +774,7 @@ impl SettingsApp {
                 self.display_contrast = !self.display_contrast;
                 true
             }
+            SettingsRowKind::R10BleRemoteMode => self.cycle_r10_ble_remote_mode(ctx),
             SettingsRowKind::UiFontSource | SettingsRowKind::StaticValue(_) => false,
             SettingsRowKind::DeviceSleepTimeout => {
                 self.device_sleep_timeout = cycle_index(self.device_sleep_timeout, 4, delta);
@@ -789,6 +807,25 @@ impl SettingsApp {
         } else {
             ctx.mark_dirty(self.active_selected_row_region());
         }
+    }
+
+    fn cycle_r10_ble_remote_mode(&mut self, ctx: &mut AppContext) -> bool {
+        let action = match (
+            self.r10_ble_settings.mode(),
+            self.r10_ble_settings.pending_confirmation(),
+        ) {
+            (_, Some(R10BleSettingsMode::ReaderRemote)) => {
+                R10BleSettingsAction::ConfirmReaderRemote
+            }
+            (R10BleSettingsMode::Off, _) => R10BleSettingsAction::SelectProbeOnly,
+            (R10BleSettingsMode::ProbeOnly, _) => R10BleSettingsAction::SelectReaderRemote,
+            (R10BleSettingsMode::ReaderRemote, _) => R10BleSettingsAction::QuickDisable,
+        };
+
+        let _transition = self.r10_ble_settings.apply(action);
+
+        ctx.request_full_redraw();
+        true
     }
 
     fn format_value(&self, kind: SettingsRowKind, buf: &mut StackFmt<40>) {
@@ -883,6 +920,15 @@ impl SettingsApp {
             }
             SettingsRowKind::DeviceButtonTest => {
                 let _ = write!(buf, "Coming soon");
+            }
+            SettingsRowKind::R10BleRemoteMode => {
+                if self.r10_ble_settings.pending_confirmation()
+                    == Some(R10BleSettingsMode::ReaderRemote)
+                {
+                    let _ = buf.write_str("Confirm ReaderRemote");
+                } else {
+                    let _ = buf.write_str(self.r10_ble_settings.mode().status_label());
+                }
             }
             SettingsRowKind::AboutOs => {
                 let _ = write!(buf, "Rustmix");

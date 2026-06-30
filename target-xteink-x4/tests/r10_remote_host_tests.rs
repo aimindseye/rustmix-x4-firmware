@@ -100,6 +100,9 @@ mod rustmix_x4 {
         pub mod r10_ble_reader_remote_guard {
             include!("../src/rustmix_x4/ring_remote/r10_ble_reader_remote_guard.rs");
         }
+        pub mod r10_ble_settings_ui {
+            include!("../src/rustmix_x4/ring_remote/r10_ble_settings_ui.rs");
+        }
     }
 }
 

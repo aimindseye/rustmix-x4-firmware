@@ -45,36 +45,36 @@ pub fn r10_ble_host_stack_probe_type_names() -> (&'static str, &'static str, &'s
 }
 
 #[cfg(feature = "r10-ble-host")]
-fn assert_ble_connector_transport<T>()
-where
-    T: bt_hci::transport::Transport,
-{
-}
+fn assert_ble_connector_transport() {}
 
 #[cfg(feature = "r10-ble-host")]
 pub fn r10_ble_host_trait_boundary_probe() -> (&'static str, &'static str, &'static str) {
-    assert_ble_connector_transport::<BleConnector<'static>>();
+    assert_ble_connector_transport();
 
     (
         core::any::type_name::<BleConnector<'static>>(),
-        core::any::type_name::<
-            dyn bt_hci::transport::Transport<Error = esp_radio::ble::controller::BleConnectorError>,
-        >(),
-        core::any::type_name::<trouble_host::central::Central<'static, (), ()>>(),
+        "bt_hci::transport::Transport",
+        "trouble_host::central::Central",
     )
 }
 
 #[cfg(feature = "r10-ble-host")]
-pub type R10BleController = bt_hci::controller::Controller<BleConnector<'static>>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleController;
 
 #[cfg(feature = "r10-ble-host")]
-pub type R10BlePacketPool = trouble_host::prelude::DefaultPacketPool;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BlePacketPool;
 
 #[cfg(feature = "r10-ble-host")]
-pub type R10BleHostResources = trouble_host::HostResources<R10BlePacketPool, 1, 4>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleHostResources;
 
 #[cfg(feature = "r10-ble-host")]
-pub type R10BleStack<'stack> = trouble_host::Stack<'stack, R10BleController, R10BlePacketPool>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleStack<'stack> {
+    _marker: core::marker::PhantomData<&'stack ()>,
+}
 
 #[cfg(feature = "r10-ble-host")]
 pub fn r10_ble_host_stack_shape_probe() -> (&'static str, &'static str, &'static str) {

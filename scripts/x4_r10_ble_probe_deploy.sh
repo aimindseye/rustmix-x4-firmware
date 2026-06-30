@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+TARGET="${R10_BLE_X4_TARGET:-riscv32imc-unknown-none-elf}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -53,6 +54,7 @@ echo "==> R10 BLE X4 ESP32-C3 backend task: enabled"
 echo "==> R10 BLE X4 ESP32-C3 operation queue: enabled"
 echo "==> R10 BLE X4 ESP32-C3 runner boundary: enabled"
 echo "==> R10 BLE X4 ReaderRemote guard: enabled"
+echo "==> R10 BLE X4 Settings UI persistence: enabled"
 echo "==> Validating host-side deployment contract"
 cargo test -p "$PKG" r10_ble_device_task_x4_deploy -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_x4_runtime -- --nocapture
@@ -61,6 +63,7 @@ cargo test -p "$PKG" r10_ble_device_task_x4_probe_bridge -- --nocapture
 cargo test -p "$PKG" r10_ble_esp32c3_probe_backend -- --nocapture
 cargo test -p "$PKG" r10_ble_esp32c3_probe -- --nocapture
 cargo test -p "$PKG" r10_ble_reader_remote_guard -- --nocapture
+cargo test -p "$PKG" r10_ble_settings_ui -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_hardware_mock -- --nocapture
 
 export R10_BLE_X4_PROBE_BRIDGE="${R10_BLE_X4_PROBE_BRIDGE:-1}"
@@ -68,11 +71,12 @@ export R10_BLE_X4_BACKEND_TASK="${R10_BLE_X4_BACKEND_TASK:-1}"
 export R10_BLE_X4_OPERATION_QUEUE="${R10_BLE_X4_OPERATION_QUEUE:-1}"
 export R10_BLE_X4_RUNNER="${R10_BLE_X4_RUNNER:-1}"
 export R10_BLE_X4_READER_REMOTE_GUARD="${R10_BLE_X4_READER_REMOTE_GUARD:-1}"
+export R10_BLE_X4_SETTINGS="${R10_BLE_X4_SETTINGS:-1}"
 echo "==> Checking firmware with feature: $FEATURE"
-cargo check -p "$PKG" --features "$FEATURE"
+cargo check -p "$PKG" --features "$FEATURE" --target "$TARGET" --target "$TARGET"
 
-echo "==> Building release firmware"
-cargo build --release -p "$PKG" --features "$FEATURE"
+echo "==> Building release firmware for target: $TARGET"
+cargo build --release -p "$PKG" --features "$FEATURE" --target "$TARGET" --target "$TARGET"
 
 ELF="${R10_BLE_X4_ELF:-}"
 if [[ -z "$ELF" ]]; then
@@ -98,6 +102,11 @@ if [[ -z "$PORT" ]]; then
   echo "No serial port provided or auto-detected." >&2
   echo "Usage: $0 /dev/ttyACM0" >&2
   echo "Or set ESPFLASH_PORT=/dev/ttyACM0" >&2
+  exit 1
+fi
+
+if [ -z "${ELF:-}" ] || [ ! -f "$ELF" ]; then
+  echo "ERROR: R10 BLE firmware ELF missing under target/$TARGET/release/$PKG" >&2
   exit 1
 fi
 

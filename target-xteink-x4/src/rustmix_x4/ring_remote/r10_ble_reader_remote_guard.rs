@@ -11,7 +11,10 @@
 
 use super::r10_ble_device_task::R10BleDeviceTaskX4DeployMode;
 use super::r10_ble_transport::R10_BLE_LIVE_NOTIFY_VALUE_HANDLE;
-use super::r10_input_bridge::{R10InputInjection, try_enqueue_remote_action};
+use super::r10_input_bridge::R10InputInjection;
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+use super::r10_input_bridge::try_enqueue_remote_action;
 use super::r10_protocol::{R10RemotePacket, R10RemotePacketKind};
 use super::r10_remote_policy::{R10RemoteAction, R10RemotePolicy, R10RemoteScreen};
 

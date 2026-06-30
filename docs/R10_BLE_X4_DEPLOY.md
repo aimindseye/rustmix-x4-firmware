@@ -191,3 +191,41 @@ ReaderRemote deployment remains explicitly gated:
     ESPFLASH_PORT=/dev/ttyACM0 \
     ./scripts/x4_r10_ble_probe_deploy.sh
 
+
+## Settings > Controls > R10 BLE Remote
+
+`R10BleSettingsController` models the Settings UI entry:
+
+    Settings > Controls > R10 BLE Remote
+
+Available modes:
+
+    Off
+    Probe Only
+    Reader Remote
+
+Safety behavior:
+
+    Off is the default.
+    Probe Only is log-only and reader_off.
+    Reader Remote requires confirmation before it is persisted.
+    Quick Disable immediately persists Off.
+    Unconfirmed ReaderRemote persistence records are sanitized back to Off.
+
+Persistence record:
+
+    R10BLE_MODE=off
+    R10BLE_MODE=probe_only
+    R10BLE_MODE=reader_remote_confirmed
+
+The deploy script validates the settings controller before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_settings_ui -- --nocapture
+
+ReaderRemote deployment remains explicitly gated and must not become default:
+
+    R10_BLE_X4_MODE=reader_remote \
+    R10_BLE_X4_ALLOW_READER_REMOTE=1 \
+    ESPFLASH_PORT=/dev/ttyACM0 \
+    ./scripts/x4_r10_ble_probe_deploy.sh
+
