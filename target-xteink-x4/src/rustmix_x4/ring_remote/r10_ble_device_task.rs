@@ -619,6 +619,244 @@ impl R10BleDeviceTaskRunnerPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskHardwareOutcome {
+    Pending,
+    Started,
+    Ok,
+    Ignored,
+    Failed,
+    Timeout,
+}
+
+impl R10BleDeviceTaskHardwareOutcome {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Started => "started",
+            Self::Ok => "ok",
+            Self::Ignored => "ignored",
+            Self::Failed => "failed",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Ok | Self::Ignored | Self::Failed | Self::Timeout
+        )
+    }
+
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+
+    pub const fn should_retry(&self) -> bool {
+        matches!(self, Self::Failed | Self::Timeout)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskHardwareTranscriptEntry {
+    pub step: R10BleDeviceTaskHardwareCommandStep,
+    pub outcome: R10BleDeviceTaskHardwareOutcome,
+    pub sequence: u8,
+}
+
+impl R10BleDeviceTaskHardwareTranscriptEntry {
+    pub const fn prefix_label(&self) -> &'static str {
+        "ble_hw_command"
+    }
+
+    pub const fn lifecycle_label(&self) -> &'static str {
+        self.step.lifecycle_label()
+    }
+
+    pub const fn command_label(&self) -> &'static str {
+        self.step.command_label()
+    }
+
+    pub const fn outcome_label(&self) -> &'static str {
+        self.outcome.as_str()
+    }
+
+    pub const fn reader_label(&self) -> &'static str {
+        self.step.reader_label()
+    }
+
+    pub const fn is_terminal(&self) -> bool {
+        self.outcome.is_terminal()
+    }
+
+    pub const fn should_retry(&self) -> bool {
+        self.outcome.should_retry()
+    }
+
+    pub const fn should_emit_reader_event(&self) -> bool {
+        self.outcome.is_success() && self.step.should_emit_reader_event()
+    }
+
+    pub const fn is_probe_log_only(&self) -> bool {
+        self.step.is_probe_log_only()
+    }
+
+    pub fn is_monitor_safe(&self) -> bool {
+        r10_ble_device_task_monitor_label_is_safe(self.prefix_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.lifecycle_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.command_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.outcome_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.reader_label())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskHardwareTranscript<const N: usize> {
+    entries: [Option<R10BleDeviceTaskHardwareTranscriptEntry>; N],
+    len: usize,
+    dropped: usize,
+}
+
+impl<const N: usize> Default for R10BleDeviceTaskHardwareTranscript<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> R10BleDeviceTaskHardwareTranscript<N> {
+    pub fn new() -> Self {
+        Self {
+            entries: [None; N],
+            len: 0,
+            dropped: 0,
+        }
+    }
+
+    pub fn push(&mut self, entry: R10BleDeviceTaskHardwareTranscriptEntry) -> bool {
+        if self.len < N {
+            self.entries[self.len] = Some(entry);
+            self.len += 1;
+            true
+        } else {
+            self.dropped += 1;
+            false
+        }
+    }
+
+    pub fn record_plan_with_outcome(
+        &mut self,
+        plan: &R10BleDeviceTaskHardwareCommandPlan,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> usize {
+        plan.emit_transcript(self, outcome)
+    }
+
+    pub fn record_runner_with_outcome(
+        &mut self,
+        runner: &R10BleDeviceTaskRunnerPlan,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> usize {
+        R10BleDeviceTaskHardwareCommandPlan::from_runner_plan(*runner)
+            .emit_transcript(self, outcome)
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entry_at(&self, index: usize) -> Option<R10BleDeviceTaskHardwareTranscriptEntry> {
+        if index < self.len {
+            self.entries[index]
+        } else {
+            None
+        }
+    }
+
+    pub fn last(&self) -> Option<R10BleDeviceTaskHardwareTranscriptEntry> {
+        if self.len == 0 {
+            None
+        } else {
+            self.entry_at(self.len - 1)
+        }
+    }
+
+    pub fn clear(&mut self) {
+        let mut index = 0;
+
+        while index < self.len {
+            self.entries[index] = None;
+            index += 1;
+        }
+
+        self.len = 0;
+        self.dropped = 0;
+    }
+}
+
+impl R10BleDeviceTaskHardwareCommandPlan {
+    pub fn transcript_entry_at(
+        &self,
+        index: usize,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> Option<R10BleDeviceTaskHardwareTranscriptEntry> {
+        self.command_at(index)
+            .map(|step| R10BleDeviceTaskHardwareTranscriptEntry {
+                step,
+                outcome,
+                sequence: index as u8,
+            })
+    }
+
+    pub fn emit_transcript<const N: usize>(
+        &self,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> usize {
+        let mut emitted = 0;
+        let mut index = 0;
+
+        while index < self.runner.lifecycle.len() {
+            if let Some(entry) = self.transcript_entry_at(index, outcome) {
+                if transcript.push(entry) {
+                    emitted += 1;
+                }
+            }
+
+            index += 1;
+        }
+
+        emitted
+    }
+}
+
+impl R10BleDeviceTaskRunnerPlan {
+    pub fn hardware_transcript_entry_at(
+        &self,
+        index: usize,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> Option<R10BleDeviceTaskHardwareTranscriptEntry> {
+        R10BleDeviceTaskHardwareCommandPlan::from_runner_plan(*self)
+            .transcript_entry_at(index, outcome)
+    }
+
+    pub fn emit_hardware_transcript<const N: usize>(
+        &self,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> usize {
+        R10BleDeviceTaskHardwareCommandPlan::from_runner_plan(*self)
+            .emit_transcript(transcript, outcome)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
     pub started: bool,
@@ -1283,5 +1521,222 @@ mod tests {
 
         sink.clear();
         assert!(sink.is_empty());
+    }
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_outcome_labels_are_stable_and_safe() {
+        let outcomes = [
+            R10BleDeviceTaskHardwareOutcome::Pending,
+            R10BleDeviceTaskHardwareOutcome::Started,
+            R10BleDeviceTaskHardwareOutcome::Ok,
+            R10BleDeviceTaskHardwareOutcome::Ignored,
+            R10BleDeviceTaskHardwareOutcome::Failed,
+            R10BleDeviceTaskHardwareOutcome::Timeout,
+        ];
+
+        let labels = outcomes.map(|outcome| outcome.as_str());
+
+        assert_eq!(
+            labels,
+            ["pending", "started", "ok", "ignored", "failed", "timeout"]
+        );
+
+        for label in labels {
+            assert!(r10_ble_device_task_monitor_label_is_safe(label));
+        }
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_outcome_flags_are_explicit() {
+        assert!(!R10BleDeviceTaskHardwareOutcome::Pending.is_terminal());
+        assert!(!R10BleDeviceTaskHardwareOutcome::Started.is_terminal());
+        assert!(R10BleDeviceTaskHardwareOutcome::Ok.is_terminal());
+        assert!(R10BleDeviceTaskHardwareOutcome::Ignored.is_terminal());
+        assert!(R10BleDeviceTaskHardwareOutcome::Failed.is_terminal());
+        assert!(R10BleDeviceTaskHardwareOutcome::Timeout.is_terminal());
+
+        assert!(R10BleDeviceTaskHardwareOutcome::Ok.is_success());
+        assert!(!R10BleDeviceTaskHardwareOutcome::Ignored.is_success());
+        assert!(R10BleDeviceTaskHardwareOutcome::Failed.should_retry());
+        assert!(R10BleDeviceTaskHardwareOutcome::Timeout.should_retry());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_entry_is_monitor_safe() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+
+        let entry = runner
+            .hardware_transcript_entry_at(0, R10BleDeviceTaskHardwareOutcome::Started)
+            .unwrap();
+
+        assert_eq!(entry.prefix_label(), "ble_hw_command");
+        assert_eq!(entry.lifecycle_label(), "start_scan");
+        assert_eq!(entry.command_label(), "scan_start");
+        assert_eq!(entry.outcome_label(), "started");
+        assert_eq!(entry.reader_label(), "reader_off");
+        assert_eq!(entry.sequence, 0);
+        assert!(!entry.is_terminal());
+        assert!(entry.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_records_pending_probe_plan() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        assert_eq!(
+            transcript
+                .record_runner_with_outcome(&runner, R10BleDeviceTaskHardwareOutcome::Pending),
+            8
+        );
+
+        assert_eq!(transcript.len(), 8);
+        assert_eq!(transcript.dropped(), 0);
+        assert_eq!(
+            transcript.entry_at(0).unwrap().command_label(),
+            "scan_start"
+        );
+        assert_eq!(
+            transcript.entry_at(7).unwrap().command_label(),
+            "handle_notify"
+        );
+        assert_eq!(transcript.last().unwrap().outcome_label(), "pending");
+        assert!(!transcript.last().unwrap().should_emit_reader_event());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_tracks_overflow() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<3>::new();
+
+        assert_eq!(
+            transcript
+                .record_runner_with_outcome(&runner, R10BleDeviceTaskHardwareOutcome::Started),
+            3
+        );
+
+        assert_eq!(transcript.len(), 3);
+        assert_eq!(transcript.dropped(), 5);
+        assert_eq!(transcript.entry_at(0).unwrap().outcome_label(), "started");
+        assert_eq!(
+            transcript.entry_at(2).unwrap().command_label(),
+            "discover_gatt"
+        );
+        assert_eq!(transcript.entry_at(3), None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_clear_resets_state() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<4>::new();
+
+        transcript.record_runner_with_outcome(&runner, R10BleDeviceTaskHardwareOutcome::Failed);
+        assert!(!transcript.is_empty());
+        assert!(transcript.dropped() > 0);
+
+        transcript.clear();
+
+        assert!(transcript.is_empty());
+        assert_eq!(transcript.len(), 0);
+        assert_eq!(transcript.dropped(), 0);
+        assert_eq!(transcript.entry_at(0), None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_reader_remote_notify_ok_emits_reader_event() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        })
+        .unwrap();
+
+        let notify = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Ok)
+            .unwrap();
+
+        assert_eq!(notify.command_label(), "handle_notify");
+        assert_eq!(notify.reader_label(), "reader_on");
+        assert_eq!(notify.outcome_label(), "ok");
+        assert!(notify.should_emit_reader_event());
+        assert!(!notify.is_probe_log_only());
+        assert!(notify.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_probe_only_notify_ok_is_log_only() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+
+        let notify = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Ok)
+            .unwrap();
+
+        assert_eq!(notify.command_label(), "handle_notify");
+        assert_eq!(notify.reader_label(), "reader_off");
+        assert_eq!(notify.outcome_label(), "ok");
+        assert!(!notify.should_emit_reader_event());
+        assert!(notify.is_probe_log_only());
+        assert!(notify.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_failed_notify_suppresses_reader_event() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        })
+        .unwrap();
+
+        let failed = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Failed)
+            .unwrap();
+        let timeout = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Timeout)
+            .unwrap();
+        let ignored = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Ignored)
+            .unwrap();
+
+        assert!(!failed.should_emit_reader_event());
+        assert!(!timeout.should_emit_reader_event());
+        assert!(!ignored.should_emit_reader_event());
+        assert!(failed.should_retry());
+        assert!(timeout.should_retry());
+        assert!(!ignored.should_retry());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_transcript_disabled_state_emits_nothing() {
+        let mut state = R10BleDeviceTaskState::default();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let plan = R10BleDeviceTaskHardwareCommandPlan::from_state_start(&mut state);
+
+        assert_eq!(plan, None);
+        assert_eq!(transcript.len(), 0);
+        assert_eq!(transcript.dropped(), 0);
+        assert!(transcript.is_empty());
+        assert!(!state.is_started());
+
+        transcript.clear();
+        assert!(transcript.is_empty());
     }
 }

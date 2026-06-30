@@ -253,3 +253,24 @@ Reader input. `ReaderRemote` uses the same command sequence, but the notify
 handler is marked Reader-event capable so the next hardware adapter step can
 route accepted motion notifications through the existing policy bridge.
 
+
+## Hardware adapter execution transcript
+
+`R10BleDeviceTaskHardwareTranscript` records command execution outcomes over the
+hardware command plan. The transcript remains hardware-neutral and does not call
+`esp-radio` or `trouble-host` directly.
+
+Supported outcomes:
+
+    pending
+    started
+    ok
+    ignored
+    failed
+    timeout
+
+Reader input emission remains guarded: `ReaderRemote` can emit a Reader event
+only when the command is `handle_notify` and the outcome is `ok`. `ProbeOnly`
+records the same notify command as log-only. Failed and timeout outcomes are
+marked retry-worthy for the future adapter loop.
+
