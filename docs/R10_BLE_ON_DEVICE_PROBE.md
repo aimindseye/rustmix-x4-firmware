@@ -295,3 +295,18 @@ Reader input emission remains guarded. `ProbeOnly` records notify outcomes as
 log-only. `ReaderRemote` records a Reader-capable notify path, but the mock
 report counts a Reader event only when `handle_notify` completes with `ok`.
 
+
+## X4 deployable ProbeOnly package
+
+The X4 deployment path is provided by:
+
+    scripts/x4_r10_ble_probe_deploy.sh
+    docs/R10_BLE_X4_DEPLOY.md
+
+`probe_only` is the default deploy mode for the script. It builds with
+`--features r10-ble-host`, validates the deployment contract, flashes the X4
+with `espflash`, and opens the serial monitor.
+
+`reader_remote` is guarded by `R10_BLE_X4_ALLOW_READER_REMOTE=1` so Reader input
+cannot be enabled accidentally during first hardware validation.
+

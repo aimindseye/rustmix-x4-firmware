@@ -1023,6 +1023,157 @@ impl R10BleDeviceTaskHardwareMockExecutor {
     }
 }
 
+pub const R10_BLE_X4_DEPLOY_FEATURE: &str = "r10-ble-host";
+pub const R10_BLE_X4_DEPLOY_SCRIPT: &str = "scripts/x4_r10_ble_probe_deploy.sh";
+pub const R10_BLE_X4_DEPLOY_CHIP: &str = "esp32c3";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskX4DeployMode {
+    Disabled,
+    ProbeOnly,
+    ReaderRemote,
+}
+
+impl R10BleDeviceTaskX4DeployMode {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ProbeOnly => "probe_only",
+            Self::ReaderRemote => "reader_remote",
+        }
+    }
+
+    pub const fn should_flash(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub const fn reader_events_enabled(&self) -> bool {
+        matches!(self, Self::ReaderRemote)
+    }
+
+    pub fn runtime_config(&self) -> R10BleRuntimeConfig {
+        match self {
+            Self::Disabled => R10BleRuntimeConfig::disabled(),
+            Self::ProbeOnly => R10BleRuntimeConfig::probe_only_live_r10(),
+            Self::ReaderRemote => R10BleRuntimeConfig::reader_remote_live_r10(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4DeployProfile {
+    pub mode: R10BleDeviceTaskX4DeployMode,
+}
+
+impl R10BleDeviceTaskX4DeployProfile {
+    pub const fn disabled() -> Self {
+        Self {
+            mode: R10BleDeviceTaskX4DeployMode::Disabled,
+        }
+    }
+
+    pub const fn probe_only_live_r10() -> Self {
+        Self {
+            mode: R10BleDeviceTaskX4DeployMode::ProbeOnly,
+        }
+    }
+
+    pub const fn reader_remote_live_r10() -> Self {
+        Self {
+            mode: R10BleDeviceTaskX4DeployMode::ReaderRemote,
+        }
+    }
+
+    pub fn from_mode_label(label: &str) -> Option<Self> {
+        match label {
+            "disabled" => Some(Self::disabled()),
+            "probe_only" | "probe-only" | "probe" => Some(Self::probe_only_live_r10()),
+            "reader_remote" | "reader-remote" | "reader" => Some(Self::reader_remote_live_r10()),
+            _ => None,
+        }
+    }
+
+    pub const fn mode_label(&self) -> &'static str {
+        self.mode.as_str()
+    }
+
+    pub const fn feature_label(&self) -> &'static str {
+        R10_BLE_X4_DEPLOY_FEATURE
+    }
+
+    pub const fn deploy_script(&self) -> &'static str {
+        R10_BLE_X4_DEPLOY_SCRIPT
+    }
+
+    pub const fn chip_label(&self) -> &'static str {
+        R10_BLE_X4_DEPLOY_CHIP
+    }
+
+    pub const fn should_flash(&self) -> bool {
+        self.mode.should_flash()
+    }
+
+    pub const fn reader_events_enabled(&self) -> bool {
+        self.mode.reader_events_enabled()
+    }
+
+    pub fn runtime_config(&self) -> R10BleRuntimeConfig {
+        self.mode.runtime_config()
+    }
+
+    pub fn start_request(&self) -> Option<R10BleDeviceTaskStartRequest> {
+        match self.mode {
+            R10BleDeviceTaskX4DeployMode::Disabled => None,
+            R10BleDeviceTaskX4DeployMode::ProbeOnly => Some(R10BleDeviceTaskStartRequest {
+                action: R10BleDeviceTaskAction::StartProbeOnly,
+                config: self.runtime_config(),
+            }),
+            R10BleDeviceTaskX4DeployMode::ReaderRemote => Some(R10BleDeviceTaskStartRequest {
+                action: R10BleDeviceTaskAction::StartReaderRemote,
+                config: self.runtime_config(),
+            }),
+        }
+    }
+
+    pub fn runner_plan(&self) -> Option<R10BleDeviceTaskRunnerPlan> {
+        self.start_request()
+            .and_then(R10BleDeviceTaskRunnerPlan::from_start_request)
+    }
+
+    pub fn hardware_command_plan(&self) -> Option<R10BleDeviceTaskHardwareCommandPlan> {
+        self.runner_plan()
+            .map(R10BleDeviceTaskHardwareCommandPlan::from_runner_plan)
+    }
+
+    pub fn hardware_command_count(&self) -> usize {
+        let Some(plan) = self.hardware_command_plan() else {
+            return 0;
+        };
+
+        let mut count = 0;
+        let mut index = 0;
+
+        while index < plan.runner.lifecycle_len() {
+            if plan.command_at(index).is_some() {
+                count += 1;
+            }
+
+            index += 1;
+        }
+
+        count
+    }
+
+    pub fn dry_run_success_report<const N: usize>(
+        &self,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+    ) -> Option<R10BleDeviceTaskHardwareMockExecutionReport> {
+        let runner = self.runner_plan()?;
+
+        Some(R10BleDeviceTaskHardwareMockExecutor::success().execute_runner(&runner, transcript))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
@@ -2124,5 +2275,145 @@ mod tests {
         assert_eq!(transcript.dropped(), 0);
         assert!(transcript.is_empty());
         assert!(!state.is_started());
+    }
+    #[test]
+    fn r10_ble_device_task_x4_deploy_labels_are_stable_and_safe() {
+        let modes = [
+            R10BleDeviceTaskX4DeployMode::Disabled,
+            R10BleDeviceTaskX4DeployMode::ProbeOnly,
+            R10BleDeviceTaskX4DeployMode::ReaderRemote,
+        ];
+
+        let labels = modes.map(|mode| mode.as_str());
+
+        assert_eq!(labels, ["disabled", "probe_only", "reader_remote"]);
+
+        for label in labels {
+            assert!(r10_ble_device_task_monitor_label_is_safe(label));
+        }
+
+        let profile = R10BleDeviceTaskX4DeployProfile::probe_only_live_r10();
+        assert_eq!(profile.feature_label(), "r10-ble-host");
+        assert_eq!(
+            profile.deploy_script(),
+            "scripts/x4_r10_ble_probe_deploy.sh"
+        );
+        assert_eq!(profile.chip_label(), "esp32c3");
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_mode_parser_accepts_safe_aliases() {
+        assert_eq!(
+            R10BleDeviceTaskX4DeployProfile::from_mode_label("disabled"),
+            Some(R10BleDeviceTaskX4DeployProfile::disabled())
+        );
+        assert_eq!(
+            R10BleDeviceTaskX4DeployProfile::from_mode_label("probe_only"),
+            Some(R10BleDeviceTaskX4DeployProfile::probe_only_live_r10())
+        );
+        assert_eq!(
+            R10BleDeviceTaskX4DeployProfile::from_mode_label("probe-only"),
+            Some(R10BleDeviceTaskX4DeployProfile::probe_only_live_r10())
+        );
+        assert_eq!(
+            R10BleDeviceTaskX4DeployProfile::from_mode_label("reader_remote"),
+            Some(R10BleDeviceTaskX4DeployProfile::reader_remote_live_r10())
+        );
+        assert_eq!(
+            R10BleDeviceTaskX4DeployProfile::from_mode_label("live"),
+            None
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_disabled_is_noop() {
+        let profile = R10BleDeviceTaskX4DeployProfile::disabled();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        assert_eq!(profile.mode_label(), "disabled");
+        assert!(!profile.should_flash());
+        assert!(!profile.reader_events_enabled());
+        assert_eq!(profile.start_request(), None);
+        assert_eq!(profile.runner_plan(), None);
+        assert_eq!(profile.hardware_command_plan(), None);
+        assert_eq!(profile.hardware_command_count(), 0);
+        assert_eq!(profile.dry_run_success_report(&mut transcript), None);
+        assert!(transcript.is_empty());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_probe_only_is_flashable_log_only() {
+        let profile = R10BleDeviceTaskX4DeployProfile::probe_only_live_r10();
+        let request = profile.start_request().unwrap();
+        let runner = profile.runner_plan().unwrap();
+
+        assert_eq!(profile.mode_label(), "probe_only");
+        assert!(profile.should_flash());
+        assert!(!profile.reader_events_enabled());
+        assert_eq!(request.action, R10BleDeviceTaskAction::StartProbeOnly);
+        assert!(runner.should_run_probe());
+        assert!(!runner.should_emit_reader_events());
+        assert_eq!(profile.hardware_command_count(), 8);
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_reader_remote_is_explicit_opt_in() {
+        let profile = R10BleDeviceTaskX4DeployProfile::reader_remote_live_r10();
+        let request = profile.start_request().unwrap();
+        let runner = profile.runner_plan().unwrap();
+
+        assert_eq!(profile.mode_label(), "reader_remote");
+        assert!(profile.should_flash());
+        assert!(profile.reader_events_enabled());
+        assert_eq!(request.action, R10BleDeviceTaskAction::StartReaderRemote);
+        assert!(runner.should_run_reader_remote());
+        assert!(runner.should_emit_reader_events());
+        assert_eq!(profile.hardware_command_count(), 8);
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_probe_only_dry_run_emits_no_reader_events() {
+        let profile = R10BleDeviceTaskX4DeployProfile::probe_only_live_r10();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = profile.dry_run_success_report(&mut transcript).unwrap();
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.reader_events_emitted, 0);
+        assert!(report.completed());
+        assert!(!report.emitted_reader_events());
+        assert_eq!(transcript.last().unwrap().command_label(), "handle_notify");
+        assert_eq!(transcript.last().unwrap().reader_label(), "reader_off");
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_reader_remote_dry_run_can_emit_reader_event() {
+        let profile = R10BleDeviceTaskX4DeployProfile::reader_remote_live_r10();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = profile.dry_run_success_report(&mut transcript).unwrap();
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.reader_events_emitted, 1);
+        assert!(report.completed());
+        assert!(report.emitted_reader_events());
+        assert_eq!(transcript.last().unwrap().command_label(), "handle_notify");
+        assert_eq!(transcript.last().unwrap().reader_label(), "reader_on");
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_deploy_profile_overflow_is_visible_before_flash() {
+        let profile = R10BleDeviceTaskX4DeployProfile::probe_only_live_r10();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<3>::new();
+
+        let report = profile.dry_run_success_report(&mut transcript).unwrap();
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 3);
+        assert_eq!(report.dropped, 5);
+        assert!(!report.completed());
+        assert_eq!(transcript.dropped(), 5);
     }
 }

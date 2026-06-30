@@ -60,3 +60,8 @@ pub use r10_ble_device_task::{
     R10BleDeviceTaskState, r10_ble_device_task_default_config, r10_ble_device_task_probe_config,
     r10_ble_device_task_reader_remote_config,
 };
+
+pub use self::r10_ble_device_task::{
+    R10_BLE_X4_DEPLOY_CHIP, R10_BLE_X4_DEPLOY_FEATURE, R10_BLE_X4_DEPLOY_SCRIPT,
+    R10BleDeviceTaskX4DeployMode, R10BleDeviceTaskX4DeployProfile,
+};
