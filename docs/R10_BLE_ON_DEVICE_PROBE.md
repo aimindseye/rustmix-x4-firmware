@@ -214,3 +214,21 @@ monitor-safe lifecycle script:
 valid motion notifications pass the existing policy bridge. `Disabled` still
 produces no runner plan and does not start BLE.
 
+
+## ProbeOnly monitor event sink
+
+`R10BleDeviceTaskMonitorEvent` and `R10BleDeviceTaskMonitorSink` provide a
+small fixed-capacity event sink for the future hardware runner.
+
+Each lifecycle event exposes compact monitor-safe labels:
+
+    r10_ble_task
+    start_probe_only / start_reader_remote
+    start_scan / target_seen / connect / discover / subscribe / remote_start / poll / notify / timeout
+    reader_off / reader_on
+    running / terminal
+
+`ProbeOnly` records lifecycle events with `reader_off`. `ReaderRemote` records
+the same lifecycle with `reader_on`. `Disabled` still produces no runner plan and
+therefore no monitor events.
+

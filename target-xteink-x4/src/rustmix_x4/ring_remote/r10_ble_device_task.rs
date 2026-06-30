@@ -161,6 +161,137 @@ pub const R10_BLE_DEVICE_TASK_PROBE_LIFECYCLE: [R10BleDeviceTaskLifecycleEvent; 
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskMonitorEvent {
+    pub action: R10BleDeviceTaskAction,
+    pub lifecycle: R10BleDeviceTaskLifecycleEvent,
+    pub index: u8,
+    pub reader_events_enabled: bool,
+}
+
+impl R10BleDeviceTaskMonitorEvent {
+    pub const fn prefix_label(&self) -> &'static str {
+        "r10_ble_task"
+    }
+
+    pub const fn action_label(&self) -> &'static str {
+        self.action.as_str()
+    }
+
+    pub const fn lifecycle_label(&self) -> &'static str {
+        self.lifecycle.as_str()
+    }
+
+    pub const fn reader_label(&self) -> &'static str {
+        if self.reader_events_enabled {
+            "reader_on"
+        } else {
+            "reader_off"
+        }
+    }
+
+    pub const fn terminal_label(&self) -> &'static str {
+        if self.lifecycle.is_terminal() {
+            "terminal"
+        } else {
+            "running"
+        }
+    }
+
+    pub fn is_monitor_safe(&self) -> bool {
+        r10_ble_device_task_monitor_label_is_safe(self.prefix_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.action_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.lifecycle_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.reader_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.terminal_label())
+    }
+}
+
+pub fn r10_ble_device_task_monitor_label_is_safe(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskMonitorSink<const N: usize> {
+    events: [Option<R10BleDeviceTaskMonitorEvent>; N],
+    len: usize,
+    dropped: usize,
+}
+
+impl<const N: usize> Default for R10BleDeviceTaskMonitorSink<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> R10BleDeviceTaskMonitorSink<N> {
+    pub fn new() -> Self {
+        Self {
+            events: [None; N],
+            len: 0,
+            dropped: 0,
+        }
+    }
+
+    pub fn push(&mut self, event: R10BleDeviceTaskMonitorEvent) -> bool {
+        if self.len < N {
+            self.events[self.len] = Some(event);
+            self.len += 1;
+            true
+        } else {
+            self.dropped += 1;
+            false
+        }
+    }
+
+    pub fn record_plan(&mut self, plan: &R10BleDeviceTaskRunnerPlan) -> usize {
+        plan.emit_monitor_events(self)
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn event_at(&self, index: usize) -> Option<R10BleDeviceTaskMonitorEvent> {
+        if index < self.len {
+            self.events[index]
+        } else {
+            None
+        }
+    }
+
+    pub fn last(&self) -> Option<R10BleDeviceTaskMonitorEvent> {
+        if self.len == 0 {
+            None
+        } else {
+            self.event_at(self.len - 1)
+        }
+    }
+
+    pub fn clear(&mut self) {
+        let mut index = 0;
+
+        while index < self.len {
+            self.events[index] = None;
+            index += 1;
+        }
+
+        self.len = 0;
+        self.dropped = 0;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskRunnerPlan {
     pub request: R10BleDeviceTaskStartRequest,
     pub lifecycle: &'static [R10BleDeviceTaskLifecycleEvent],
@@ -212,6 +343,37 @@ impl R10BleDeviceTaskRunnerPlan {
         self.lifecycle
             .get(index)
             .map(R10BleDeviceTaskLifecycleEvent::as_str)
+    }
+
+    pub fn monitor_event_at(&self, index: usize) -> Option<R10BleDeviceTaskMonitorEvent> {
+        self.lifecycle
+            .get(index)
+            .map(|event| R10BleDeviceTaskMonitorEvent {
+                action: self.request.action,
+                lifecycle: *event,
+                index: index as u8,
+                reader_events_enabled: self.reader_events_enabled,
+            })
+    }
+
+    pub fn emit_monitor_events<const N: usize>(
+        &self,
+        sink: &mut R10BleDeviceTaskMonitorSink<N>,
+    ) -> usize {
+        let mut emitted = 0;
+        let mut index = 0;
+
+        while index < self.lifecycle.len() {
+            if let Some(event) = self.monitor_event_at(index) {
+                if sink.push(event) {
+                    emitted += 1;
+                }
+            }
+
+            index += 1;
+        }
+
+        emitted
     }
 }
 
@@ -575,5 +737,141 @@ mod tests {
         assert!(!R10BleDeviceTaskLifecycleEvent::Poll.is_terminal());
         assert!(R10BleDeviceTaskLifecycleEvent::Notify.is_terminal());
         assert!(R10BleDeviceTaskLifecycleEvent::Timeout.is_terminal());
+    }
+    #[test]
+    fn r10_ble_device_task_monitor_event_fields_are_compact() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+        let event = plan.monitor_event_at(0).unwrap();
+
+        assert_eq!(event.prefix_label(), "r10_ble_task");
+        assert_eq!(event.action_label(), "start_probe_only");
+        assert_eq!(event.lifecycle_label(), "start_scan");
+        assert_eq!(event.reader_label(), "reader_off");
+        assert_eq!(event.terminal_label(), "running");
+        assert_eq!(event.index, 0);
+        assert!(event.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_event_marks_terminal_events() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+
+        assert_eq!(
+            plan.monitor_event_at(7).unwrap().terminal_label(),
+            "terminal"
+        );
+        assert_eq!(
+            plan.monitor_event_at(8).unwrap().terminal_label(),
+            "terminal"
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_sink_records_probe_lifecycle() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+        let mut sink = R10BleDeviceTaskMonitorSink::<9>::new();
+
+        assert_eq!(sink.record_plan(&plan), 9);
+        assert_eq!(sink.len(), 9);
+        assert_eq!(sink.dropped(), 0);
+        assert_eq!(sink.event_at(0).unwrap().lifecycle_label(), "start_scan");
+        assert_eq!(sink.event_at(5).unwrap().lifecycle_label(), "remote_start");
+        assert_eq!(sink.event_at(8).unwrap().lifecycle_label(), "timeout");
+        assert_eq!(sink.last().unwrap().terminal_label(), "terminal");
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_sink_tracks_overflow() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+        let mut sink = R10BleDeviceTaskMonitorSink::<3>::new();
+
+        assert_eq!(sink.record_plan(&plan), 3);
+        assert_eq!(sink.len(), 3);
+        assert_eq!(sink.dropped(), 6);
+        assert_eq!(sink.event_at(0).unwrap().lifecycle_label(), "start_scan");
+        assert_eq!(sink.event_at(2).unwrap().lifecycle_label(), "connect");
+        assert_eq!(sink.event_at(3), None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_sink_clear_resets_state() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+        let mut sink = R10BleDeviceTaskMonitorSink::<4>::new();
+
+        sink.record_plan(&plan);
+        assert!(!sink.is_empty());
+        assert!(sink.dropped() > 0);
+
+        sink.clear();
+
+        assert!(sink.is_empty());
+        assert_eq!(sink.len(), 0);
+        assert_eq!(sink.dropped(), 0);
+        assert_eq!(sink.event_at(0), None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_reader_remote_emits_reader_on() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+        let mut sink = R10BleDeviceTaskMonitorSink::<9>::new();
+
+        assert_eq!(sink.record_plan(&plan), 9);
+
+        for index in 0..sink.len() {
+            let event = sink.event_at(index).unwrap();
+
+            assert_eq!(event.reader_label(), "reader_on");
+            assert_eq!(event.action_label(), "start_reader_remote");
+            assert!(event.is_monitor_safe());
+        }
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_disabled_state_emits_nothing() {
+        let mut state = R10BleDeviceTaskState::default();
+        let sink = R10BleDeviceTaskMonitorSink::<9>::new();
+
+        let plan = R10BleDeviceTaskRunnerPlan::from_state_start(&mut state);
+
+        assert_eq!(plan, None);
+        assert_eq!(sink.len(), 0);
+        assert_eq!(sink.dropped(), 0);
+        assert!(!state.is_started());
+    }
+
+    #[test]
+    fn r10_ble_device_task_monitor_labels_reject_unsafe_text() {
+        assert!(r10_ble_device_task_monitor_label_is_safe("start_scan"));
+        assert!(r10_ble_device_task_monitor_label_is_safe("reader_off"));
+
+        assert!(!r10_ble_device_task_monitor_label_is_safe(""));
+        assert!(!r10_ble_device_task_monitor_label_is_safe("StartScan"));
+        assert!(!r10_ble_device_task_monitor_label_is_safe("start-scan"));
+        assert!(!r10_ble_device_task_monitor_label_is_safe("start scan"));
+        assert!(!r10_ble_device_task_monitor_label_is_safe("scan1"));
     }
 }
