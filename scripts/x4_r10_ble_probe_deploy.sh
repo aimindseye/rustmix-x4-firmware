@@ -50,16 +50,19 @@ echo "==> R10 BLE X4 runtime trigger: deploy_script"
 echo "==> R10 BLE X4 serial records: enabled"
 echo "==> R10 BLE X4 ProbeOnly bridge: enabled"
 echo "==> R10 BLE X4 ESP32-C3 backend task: enabled"
+echo "==> R10 BLE X4 ESP32-C3 operation queue: enabled"
 echo "==> Validating host-side deployment contract"
 cargo test -p "$PKG" r10_ble_device_task_x4_deploy -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_x4_runtime -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_x4_serial -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_x4_probe_bridge -- --nocapture
 cargo test -p "$PKG" r10_ble_esp32c3_probe_backend -- --nocapture
+cargo test -p "$PKG" r10_ble_esp32c3_probe -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_hardware_mock -- --nocapture
 
 export R10_BLE_X4_PROBE_BRIDGE="${R10_BLE_X4_PROBE_BRIDGE:-1}"
 export R10_BLE_X4_BACKEND_TASK="${R10_BLE_X4_BACKEND_TASK:-1}"
+export R10_BLE_X4_OPERATION_QUEUE="${R10_BLE_X4_OPERATION_QUEUE:-1}"
 echo "==> Checking firmware with feature: $FEATURE"
 cargo check -p "$PKG" --features "$FEATURE"
 

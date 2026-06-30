@@ -115,3 +115,32 @@ For ProbeOnly deploy builds, `R10_BLE_X4_BACKEND_TASK=1` emits backend startup
 and plan records on boot. This makes the ESP32-C3 backend boundary visible in
 the serial monitor without enabling ReaderRemote.
 
+
+## ESP32-C3 ProbeOnly operation queue
+
+`R10BleEsp32c3ProbeOperationQueue` maps the r4u ProbeOnly backend states to
+concrete BLE host operations:
+
+    init_radio
+    build_controller
+    build_host_stack
+    start_scan
+    connect_target
+    discover_gatt
+    subscribe_cccd
+    write_remote_start
+    write_poll
+    await_notify
+    backoff
+
+The queue is fixed-capacity and monitor-safe. It remains `reader_off`; it is
+used only to prepare the future target-only async BLE runner. ReaderRemote
+navigation is still not enabled.
+
+The deploy script validates the queue before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_esp32c3_probe_operations -- --nocapture
+
+For ProbeOnly deploy builds, `R10_BLE_X4_OPERATION_QUEUE=1` emits the operation
+queue plan on boot.
+

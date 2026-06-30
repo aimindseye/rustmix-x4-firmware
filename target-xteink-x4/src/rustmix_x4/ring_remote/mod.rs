@@ -6,6 +6,7 @@
 
 pub mod r10_ble_device_task;
 pub mod r10_ble_esp32c3_backend;
+pub mod r10_ble_esp32c3_operations;
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
 pub mod r10_ble_probe;
@@ -93,3 +94,14 @@ pub use r10_ble_esp32c3_backend::r10_ble_esp32c3_probe_backend_type_boundary;
 
 #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
 pub use r10_ble_esp32c3_backend::r10_ble_x4_emit_esp32c3_probe_backend_startup_log;
+
+pub use r10_ble_esp32c3_operations::{
+    R10BleEsp32c3ProbeOperation, R10BleEsp32c3ProbeOperationQueue,
+    R10BleEsp32c3ProbeOperationRecord, r10_ble_esp32c3_probe_initial_operation_queue,
+    r10_ble_esp32c3_probe_operation_after_output, r10_ble_esp32c3_probe_operation_for_state,
+    r10_ble_esp32c3_probe_plan_operation_queue, r10_ble_esp32c3_probe_session_operation_queue,
+    r10_ble_esp32c3_probe_step_operation,
+};
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub use r10_ble_esp32c3_operations::r10_ble_x4_emit_esp32c3_probe_operation_queue_startup_log;

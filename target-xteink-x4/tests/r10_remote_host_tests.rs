@@ -91,6 +91,9 @@ mod rustmix_x4 {
         pub mod r10_ble_esp32c3_backend {
             include!("../src/rustmix_x4/ring_remote/r10_ble_esp32c3_backend.rs");
         }
+        pub mod r10_ble_esp32c3_operations {
+            include!("../src/rustmix_x4/ring_remote/r10_ble_esp32c3_operations.rs");
+        }
     }
 }
 
