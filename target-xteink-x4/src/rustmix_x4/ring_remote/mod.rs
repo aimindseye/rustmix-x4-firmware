@@ -11,10 +11,12 @@ pub mod r10_ble_esp32c3_operations;
 pub mod r10_ble_esp32c3_runner;
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
+pub mod r10_ble_live_central;
 pub mod r10_ble_probe;
 pub mod r10_ble_reader_remote_guard;
 pub mod r10_ble_settings_ui;
 pub mod r10_ble_transport;
+pub mod r10_ble_x4_build_mode;
 pub mod r10_input_bridge;
 pub mod r10_protocol;
 pub mod r10_remote_policy;
@@ -84,7 +86,8 @@ pub use self::r10_ble_device_task::{
 
 pub use self::r10_ble_device_task::{
     R10BleDeviceTaskX4ProbeOnlyBleBridge, R10BleDeviceTaskX4ProbeOnlyBridgeEvent,
-    R10BleDeviceTaskX4ProbeOnlyBridgeStage, r10_ble_x4_emit_probe_only_bridge_startup_log,
+    R10BleDeviceTaskX4ProbeOnlyBridgeStage, r10_ble_x4_emit_compiled_mode_startup_log,
+    r10_ble_x4_emit_probe_only_bridge_startup_log,
 };
 
 pub use r10_ble_esp32c3_backend::{
@@ -140,3 +143,14 @@ pub use r10_ble_settings_ui::{
 
 #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
 pub use r10_ble_settings_ui::r10_ble_x4_emit_settings_status_startup_log;
+
+pub use r10_ble_x4_build_mode::{
+    R10_BLE_X4_COMPILED_ALLOW_READER_REMOTE, R10_BLE_X4_COMPILED_MODE,
+    R10_BLE_X4_COMPILED_SETTINGS, r10_ble_x4_compiled_allow_reader_remote_opt,
+    r10_ble_x4_compiled_mode_opt, r10_ble_x4_compiled_settings_opt,
+};
+
+pub use r10_ble_live_central::{
+    R10BleLiveCentralStatus, r10_ble_live_central_compiled_status,
+    r10_ble_x4_emit_live_central_status_log,
+};

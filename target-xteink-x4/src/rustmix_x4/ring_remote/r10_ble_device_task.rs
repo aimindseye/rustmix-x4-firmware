@@ -2004,23 +2004,70 @@ impl R10BleDeviceTaskX4RuntimeSerialRecord {
     }
 }
 
-#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
 pub fn r10_ble_x4_print_serial_record(record: R10BleDeviceTaskX4RuntimeSerialRecord) {
+    let event = record.value_for_key("event").unwrap_or("ble_runtime");
+    let kind = record.value_for_key("kind").unwrap_or("runtime");
+    let mode = record.value_for_key("mode").unwrap_or("unknown");
+    let source = record.value_for_key("source").unwrap_or("none");
+    let lifecycle = record.value_for_key("lifecycle").unwrap_or("none");
+    let command = record.value_for_key("command").unwrap_or("none");
+    let outcome = record.value_for_key("outcome").unwrap_or("none");
+    let reader = record.value_for_key("reader").unwrap_or("reader_off");
+    let status = record.value_for_key("status").unwrap_or("ready");
+
+    #[cfg(target_arch = "riscv32")]
     esp_println::println!(
         "rustmix event={} kind={} mode={} source={} lifecycle={} command={} outcome={} reader={} status={}",
-        record.value_for_key("event").unwrap_or("none"),
-        record.value_for_key("kind").unwrap_or("none"),
-        record.value_for_key("mode").unwrap_or("none"),
-        record.value_for_key("source").unwrap_or("none"),
-        record.value_for_key("lifecycle").unwrap_or("none"),
-        record.value_for_key("command").unwrap_or("none"),
-        record.value_for_key("outcome").unwrap_or("none"),
-        record.value_for_key("reader").unwrap_or("none"),
-        record.value_for_key("status").unwrap_or("none"),
+        event,
+        kind,
+        mode,
+        source,
+        lifecycle,
+        command,
+        outcome,
+        reader,
+        status
+    );
+
+    #[cfg(not(target_arch = "riscv32"))]
+    std::println!(
+        "rustmix event={} kind={} mode={} source={} lifecycle={} command={} outcome={} reader={} status={}",
+        event,
+        kind,
+        mode,
+        source,
+        lifecycle,
+        command,
+        outcome,
+        reader,
+        status
     );
 }
 
-#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub fn r10_ble_x4_emit_compiled_mode_startup_log() {
+    let compiled_mode =
+        super::r10_ble_x4_build_mode::r10_ble_x4_compiled_mode_opt().unwrap_or("probe_only");
+    let allow_reader_remote =
+        super::r10_ble_x4_build_mode::r10_ble_x4_compiled_allow_reader_remote_opt() == Some("1");
+
+    match compiled_mode {
+        "reader_remote" | "reader-remote" | "reader" if allow_reader_remote => {
+            let trigger = R10BleDeviceTaskX4RuntimeTrigger::reader_remote_manual();
+
+            r10_ble_x4_print_serial_record(trigger.profile_serial_record());
+            r10_ble_x4_print_serial_record(trigger.trigger_serial_record());
+        }
+        "off" | "disabled" => {
+            let trigger = R10BleDeviceTaskX4RuntimeTrigger::disabled_boot();
+
+            r10_ble_x4_print_serial_record(trigger.profile_serial_record());
+        }
+        _ => {
+            r10_ble_x4_emit_probe_only_bridge_startup_log();
+        }
+    }
+}
+
 pub fn r10_ble_x4_emit_probe_only_bridge_startup_log() {
     let bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
 

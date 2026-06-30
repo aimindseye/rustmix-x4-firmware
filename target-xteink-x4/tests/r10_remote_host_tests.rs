@@ -85,6 +85,9 @@ mod rustmix_x4 {
         pub mod r10_ble_transport {
             include!("../src/rustmix_x4/ring_remote/r10_ble_transport.rs");
         }
+        pub mod r10_ble_x4_build_mode {
+            include!("../src/rustmix_x4/ring_remote/r10_ble_x4_build_mode.rs");
+        }
         pub mod r10_ble_device_task {
             include!("../src/rustmix_x4/ring_remote/r10_ble_device_task.rs");
         }
@@ -102,6 +105,9 @@ mod rustmix_x4 {
         }
         pub mod r10_ble_settings_ui {
             include!("../src/rustmix_x4/ring_remote/r10_ble_settings_ui.rs");
+        }
+        pub mod r10_ble_live_central {
+            include!("../src/rustmix_x4/ring_remote/r10_ble_live_central.rs");
         }
     }
 }

@@ -62,28 +62,30 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
     {
         if option_env!("R10_BLE_X4_PROBE_BRIDGE") == Some("1") {
-            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_probe_only_bridge_startup_log();
+            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_compiled_mode_startup_log();
+            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_live_central_status_log();
         }
     }
 
     #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
     {
-        if option_env!("R10_BLE_X4_BACKEND_TASK") == Some("1") {
-            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_backend_startup_log();
-        }
-    }
+        let r10_compiled_mode =
+            crate::rustmix_x4::ring_remote::r10_ble_x4_compiled_mode_opt().unwrap_or("probe_only");
+        let r10_probe_transcript_enabled =
+            matches!(r10_compiled_mode, "probe_only" | "probe-only" | "probe");
 
-    #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
-    {
-        if option_env!("R10_BLE_X4_OPERATION_QUEUE") == Some("1") {
-            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_operation_queue_startup_log();
-        }
-    }
+        if r10_probe_transcript_enabled {
+            if option_env!("R10_BLE_X4_BACKEND_TASK") == Some("1") {
+                crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_backend_startup_log();
+            }
 
-    #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
-    {
-        if option_env!("R10_BLE_X4_RUNNER") == Some("1") {
-            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_runner_startup_log();
+            if option_env!("R10_BLE_X4_OPERATION_QUEUE") == Some("1") {
+                crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_operation_queue_startup_log();
+            }
+
+            if option_env!("R10_BLE_X4_RUNNER") == Some("1") {
+                crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_runner_startup_log();
+            }
         }
     }
 
@@ -96,7 +98,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
 
     #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
     {
-        if option_env!("R10_BLE_X4_SETTINGS") == Some("1") {
+        if crate::rustmix_x4::ring_remote::r10_ble_x4_compiled_settings_opt() == Some("1") {
             crate::rustmix_x4::ring_remote::r10_ble_x4_emit_settings_status_startup_log();
         }
     }
