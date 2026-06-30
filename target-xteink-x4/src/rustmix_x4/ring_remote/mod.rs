@@ -4,6 +4,7 @@
 //! BLE central transport is added later so the existing Reader/Wi-Fi/Sleep
 //! baseline stays protected while the R10 protocol is validated.
 
+pub mod r10_ble_device_task;
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
 pub mod r10_ble_probe;
@@ -52,4 +53,10 @@ pub use r10_ble_host::{
     R10BleRuntimeStep, R10BleStack, r10_ble_gatt_runtime_plan, r10_ble_host_contract_summary,
     r10_ble_host_stack_probe_type_names, r10_ble_host_stack_shape_probe,
     r10_ble_host_trait_boundary_probe, r10_ble_runtime_plan,
+};
+
+pub use r10_ble_device_task::{
+    R10BleDeviceTaskAction, R10BleDeviceTaskPlan, R10BleDeviceTaskState,
+    r10_ble_device_task_default_config, r10_ble_device_task_probe_config,
+    r10_ble_device_task_reader_remote_config,
 };

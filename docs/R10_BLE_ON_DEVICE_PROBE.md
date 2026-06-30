@@ -158,3 +158,20 @@ writes:
 This avoids writing CCCD enable twice during the Reader/Probe startup path while
 preserving the lower-level operation-order contract.
 
+
+## On-device task adapter scaffold
+
+`R10BleDeviceTaskPlan` and `R10BleDeviceTaskState` provide the runtime adapter
+contract for the future ESP BLE task.
+
+The adapter maps runtime config to task startup actions:
+
+    Disabled      -> StayDisabled
+    ProbeOnly     -> StartProbeOnly
+    ReaderRemote  -> StartReaderRemote
+
+The default remains disabled. The task state also prevents repeated start
+requests until the task is stopped or reconfigured. This is the boundary that
+the next hardware-facing deliverable can attach to `esp-radio` / `trouble-host`
+without changing the Reader policy or packet contracts.
+
