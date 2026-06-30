@@ -11,6 +11,7 @@ pub mod r10_ble_esp32c3_runner;
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
 pub mod r10_ble_probe;
+pub mod r10_ble_reader_remote_guard;
 pub mod r10_ble_transport;
 pub mod r10_input_bridge;
 pub mod r10_protocol;
@@ -114,3 +115,15 @@ pub use r10_ble_esp32c3_runner::{
 
 #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
 pub use r10_ble_esp32c3_runner::r10_ble_x4_emit_esp32c3_probe_runner_startup_log;
+
+pub use r10_ble_reader_remote_guard::{
+    R10BleReaderRemoteGuard, R10BleReaderRemoteGuardDecision, R10BleReaderRemoteGuardMode,
+    R10BleReaderRemoteGuardReason, R10BleReaderRemoteGuardRecord, reader_remote_reader_label,
+    reader_remote_screen_label, reader_remote_status_label,
+};
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub use r10_ble_reader_remote_guard::{
+    r10_ble_x4_emit_reader_remote_guard_startup_log,
+    r10_ble_x4_reader_remote_try_enqueue_guarded_notify,
+};

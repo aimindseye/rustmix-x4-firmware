@@ -97,6 +97,9 @@ mod rustmix_x4 {
         pub mod r10_ble_esp32c3_runner {
             include!("../src/rustmix_x4/ring_remote/r10_ble_esp32c3_runner.rs");
         }
+        pub mod r10_ble_reader_remote_guard {
+            include!("../src/rustmix_x4/ring_remote/r10_ble_reader_remote_guard.rs");
+        }
     }
 }
 

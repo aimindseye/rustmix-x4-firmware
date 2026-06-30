@@ -163,3 +163,31 @@ filter:
 For ProbeOnly deploy builds, `R10_BLE_X4_RUNNER=1` emits runner startup records
 on boot.
 
+
+## ReaderRemote guarded navigation
+
+`R10BleReaderRemoteGuard` enables guarded ReaderRemote navigation only when all
+of these conditions pass:
+
+    mode == reader_remote
+    explicit ReaderRemote unlock is present
+    current screen is Reader
+    notify handle matches the R10 notify value handle
+    payload is a valid R10 motion packet
+    existing R10 debounce accepts the event
+
+ProbeOnly remains log-only and returns `reader_off`. Disabled remains the
+default. Accepted ReaderRemote motion maps through the existing R10 input bridge
+to the same X4 Reader next-page button event used by the physical page key.
+
+The deploy script validates the guard before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_reader_remote_guard -- --nocapture
+
+ReaderRemote deployment remains explicitly gated:
+
+    R10_BLE_X4_MODE=reader_remote \
+    R10_BLE_X4_ALLOW_READER_REMOTE=1 \
+    ESPFLASH_PORT=/dev/ttyACM0 \
+    ./scripts/x4_r10_ble_probe_deploy.sh
+
