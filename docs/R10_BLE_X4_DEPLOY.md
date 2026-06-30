@@ -70,3 +70,30 @@ The deploy script validates this renderer before flashing:
 ProbeOnly records remain `reader_off`; ReaderRemote records are `reader_on` only
 for the explicit opt-in mode.
 
+
+## ProbeOnly BLE bridge from scan through notify logs
+
+`R10BleDeviceTaskX4ProbeOnlyBleBridge` is the firmware-side bridge that real BLE
+adapter callbacks feed. It records each ProbeOnly stage as no-alloc transcript
+entries and r4s serial records:
+
+    start_scan
+    target_seen
+    connect
+    discover
+    subscribe
+    remote_start
+    poll
+    notify
+
+ProbeOnly remains `reader_off`; notification packets are classified and logged
+but never injected into Reader navigation.
+
+The deploy script validates this bridge before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_device_task_x4_probe_bridge -- --nocapture
+
+For ProbeOnly deploy builds, `R10_BLE_X4_PROBE_BRIDGE=1` emits the bridge plan
+records on boot so the serial monitor shows the active bridge boundary without
+enabling ReaderRemote.
+

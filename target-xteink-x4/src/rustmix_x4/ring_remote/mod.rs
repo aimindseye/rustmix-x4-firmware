@@ -75,3 +75,8 @@ pub use self::r10_ble_device_task::{
 pub use self::r10_ble_device_task::{
     R10BleDeviceTaskX4RuntimeSerialField, R10BleDeviceTaskX4RuntimeSerialRecord,
 };
+
+pub use self::r10_ble_device_task::{
+    R10BleDeviceTaskX4ProbeOnlyBleBridge, R10BleDeviceTaskX4ProbeOnlyBridgeEvent,
+    R10BleDeviceTaskX4ProbeOnlyBridgeStage, r10_ble_x4_emit_probe_only_bridge_startup_log,
+};

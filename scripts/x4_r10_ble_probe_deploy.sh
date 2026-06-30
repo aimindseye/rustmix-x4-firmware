@@ -48,12 +48,15 @@ fi
 echo "==> R10 BLE X4 deploy mode: $MODE"
 echo "==> R10 BLE X4 runtime trigger: deploy_script"
 echo "==> R10 BLE X4 serial records: enabled"
+echo "==> R10 BLE X4 ProbeOnly bridge: enabled"
 echo "==> Validating host-side deployment contract"
 cargo test -p "$PKG" r10_ble_device_task_x4_deploy -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_x4_runtime -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_x4_serial -- --nocapture
+cargo test -p "$PKG" r10_ble_device_task_x4_probe_bridge -- --nocapture
 cargo test -p "$PKG" r10_ble_device_task_hardware_mock -- --nocapture
 
+export R10_BLE_X4_PROBE_BRIDGE="${R10_BLE_X4_PROBE_BRIDGE:-1}"
 echo "==> Checking firmware with feature: $FEATURE"
 cargo check -p "$PKG" --features "$FEATURE"
 

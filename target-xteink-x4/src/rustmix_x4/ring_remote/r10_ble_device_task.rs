@@ -1,4 +1,4 @@
-use super::r10_ble_transport::{
+use crate::rustmix_x4::ring_remote::r10_ble_transport::{
     R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS, R10BleRuntimeConfig, R10BleRuntimeMode,
     R10BleRuntimeStartDecision,
 };
@@ -1591,6 +1591,457 @@ impl R10BleDeviceTaskX4RuntimeTrigger {
         report: R10BleDeviceTaskHardwareMockExecutionReport,
     ) -> R10BleDeviceTaskX4RuntimeSerialRecord {
         R10BleDeviceTaskX4RuntimeSerialRecord::from_line(self.report_log_line(report))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskX4ProbeOnlyBridgeStage {
+    ScanStarted,
+    AdvertisementIgnored,
+    TargetSeen,
+    Connected,
+    ConnectFailed,
+    GattReady,
+    GattIncomplete,
+    SubscribeWritten,
+    RemoteStartWritten,
+    PollWritten,
+    NotifyReceived,
+    NotifyIgnored,
+    Timeout,
+}
+
+impl R10BleDeviceTaskX4ProbeOnlyBridgeStage {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::ScanStarted => "scan_started",
+            Self::AdvertisementIgnored => "advertisement_ignored",
+            Self::TargetSeen => "target_seen",
+            Self::Connected => "connected",
+            Self::ConnectFailed => "connect_failed",
+            Self::GattReady => "gatt_ready",
+            Self::GattIncomplete => "gatt_incomplete",
+            Self::SubscribeWritten => "subscribe_written",
+            Self::RemoteStartWritten => "remote_start_written",
+            Self::PollWritten => "poll_written",
+            Self::NotifyReceived => "notify_received",
+            Self::NotifyIgnored => "notify_ignored",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    pub const fn is_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::ConnectFailed | Self::GattIncomplete | Self::Timeout
+        )
+    }
+
+    pub const fn is_notify(&self) -> bool {
+        matches!(self, Self::NotifyReceived | Self::NotifyIgnored)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+    pub stage: R10BleDeviceTaskX4ProbeOnlyBridgeStage,
+    pub record: Option<R10BleDeviceTaskX4RuntimeSerialRecord>,
+}
+
+impl R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+    pub const fn none(stage: R10BleDeviceTaskX4ProbeOnlyBridgeStage) -> Self {
+        Self {
+            stage,
+            record: None,
+        }
+    }
+
+    pub const fn with_record(
+        stage: R10BleDeviceTaskX4ProbeOnlyBridgeStage,
+        record: R10BleDeviceTaskX4RuntimeSerialRecord,
+    ) -> Self {
+        Self {
+            stage,
+            record: Some(record),
+        }
+    }
+
+    pub fn is_monitor_safe(&self) -> bool {
+        r10_ble_device_task_monitor_label_is_safe(self.stage.as_str())
+            && self
+                .record
+                .map(|record| record.is_monitor_safe())
+                .unwrap_or(true)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4ProbeOnlyBleBridge<const N: usize> {
+    pub trigger: R10BleDeviceTaskX4RuntimeTrigger,
+    pub probe: super::r10_ble_probe::R10BleOnDeviceProbe,
+    pub transcript: R10BleDeviceTaskHardwareTranscript<N>,
+}
+
+impl<const N: usize> R10BleDeviceTaskX4ProbeOnlyBleBridge<N> {
+    pub fn new() -> Self {
+        Self {
+            trigger: R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script(),
+            probe: super::r10_ble_probe::R10BleOnDeviceProbe::live_r10(),
+            transcript: R10BleDeviceTaskHardwareTranscript::new(),
+        }
+    }
+
+    pub const fn is_reader_input_enabled(&self) -> bool {
+        false
+    }
+
+    pub const fn is_probe_only(&self) -> bool {
+        true
+    }
+
+    pub fn report(&self) -> super::r10_ble_probe::R10BleProbeReport {
+        self.probe.report
+    }
+
+    pub fn transcript_len(&self) -> usize {
+        self.transcript.len()
+    }
+
+    pub fn transcript_dropped(&self) -> usize {
+        self.transcript.dropped()
+    }
+
+    fn runner_plan(&self) -> Option<R10BleDeviceTaskRunnerPlan> {
+        self.trigger.runner_plan()
+    }
+
+    fn push_stage_record(
+        &mut self,
+        index: usize,
+        outcome: R10BleDeviceTaskHardwareOutcome,
+    ) -> Option<R10BleDeviceTaskX4RuntimeSerialRecord> {
+        let entry = self
+            .runner_plan()?
+            .hardware_transcript_entry_at(index, outcome)?;
+
+        self.transcript.push(entry);
+        Some(self.trigger.transcript_serial_record(entry))
+    }
+
+    pub fn profile_record(&self) -> R10BleDeviceTaskX4RuntimeSerialRecord {
+        self.trigger.profile_serial_record()
+    }
+
+    pub fn trigger_record(&self) -> R10BleDeviceTaskX4RuntimeSerialRecord {
+        self.trigger.trigger_serial_record()
+    }
+
+    pub fn start_scan(&mut self) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        self.probe.begin_scan();
+
+        self.push_stage_record(0, R10BleDeviceTaskHardwareOutcome::Started)
+            .map(|record| {
+                R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(
+                    R10BleDeviceTaskX4ProbeOnlyBridgeStage::ScanStarted,
+                    record,
+                )
+            })
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+                R10BleDeviceTaskX4ProbeOnlyBridgeStage::ScanStarted,
+            ))
+    }
+
+    pub fn on_advertised_device(
+        &mut self,
+        device: crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleAdvertisedDevice<'_>,
+    ) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let effect = self.probe.on_advertised_device(device);
+        let matched = matches!(
+            effect,
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleRuntimeEffect::Scan(decision)
+                if decision.is_match()
+        );
+
+        let outcome = if matched {
+            R10BleDeviceTaskHardwareOutcome::Ok
+        } else {
+            R10BleDeviceTaskHardwareOutcome::Ignored
+        };
+
+        let stage = if matched {
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::TargetSeen
+        } else {
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::AdvertisementIgnored
+        };
+
+        self.push_stage_record(1, outcome)
+            .map(|record| R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(stage, record))
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(stage))
+    }
+
+    pub fn on_connected(&mut self) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let _ = self.probe.on_connected();
+
+        self.push_stage_record(2, R10BleDeviceTaskHardwareOutcome::Ok)
+            .map(|record| {
+                R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(
+                    R10BleDeviceTaskX4ProbeOnlyBridgeStage::Connected,
+                    record,
+                )
+            })
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+                R10BleDeviceTaskX4ProbeOnlyBridgeStage::Connected,
+            ))
+    }
+
+    pub fn on_connect_failed(&mut self, now_ms: u64) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let _ = self.probe.on_connect_failed(now_ms);
+
+        self.push_stage_record(2, R10BleDeviceTaskHardwareOutcome::Failed)
+            .map(|record| {
+                R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(
+                    R10BleDeviceTaskX4ProbeOnlyBridgeStage::ConnectFailed,
+                    record,
+                )
+            })
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+                R10BleDeviceTaskX4ProbeOnlyBridgeStage::ConnectFailed,
+            ))
+    }
+
+    pub fn on_discovered_handles(
+        &mut self,
+        handles: crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleGattHandles,
+    ) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        self.probe.runtime.handles = handles;
+        let status = handles.discovery_status();
+        self.probe.report.record_discovery_status(status);
+
+        if status.is_ready() {
+            let _ = self.probe.runtime.complete_discovery();
+        }
+
+        let outcome = if status.is_ready() {
+            R10BleDeviceTaskHardwareOutcome::Ok
+        } else {
+            R10BleDeviceTaskHardwareOutcome::Failed
+        };
+
+        let stage = if status.is_ready() {
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::GattReady
+        } else {
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::GattIncomplete
+        };
+
+        self.push_stage_record(3, outcome)
+            .map(|record| R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(stage, record))
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(stage))
+    }
+
+    pub fn on_live_gatt_contract_discovered(&mut self) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        self.on_discovered_handles(crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleGattHandles::new(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_SERVICE_START_HANDLE,
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_SERVICE_END_HANDLE,
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_WRITE_VALUE_HANDLE,
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_NOTIFY_CCCD_HANDLE,
+        ))
+    }
+
+    pub fn on_subscribe_written(
+        &mut self,
+        success: bool,
+        now_ms: u64,
+    ) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let _ = self.probe.on_write_result(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleWritePhase::Subscribe,
+            success,
+            now_ms,
+        );
+
+        let outcome = if success {
+            R10BleDeviceTaskHardwareOutcome::Ok
+        } else {
+            R10BleDeviceTaskHardwareOutcome::Failed
+        };
+
+        self.push_stage_record(4, outcome)
+            .map(|record| {
+                R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(
+                    R10BleDeviceTaskX4ProbeOnlyBridgeStage::SubscribeWritten,
+                    record,
+                )
+            })
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+                R10BleDeviceTaskX4ProbeOnlyBridgeStage::SubscribeWritten,
+            ))
+    }
+
+    pub fn on_remote_start_written(
+        &mut self,
+        success: bool,
+        now_ms: u64,
+    ) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let _ = self.probe.on_write_result(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleWritePhase::RemoteStart,
+            success,
+            now_ms,
+        );
+
+        let outcome = if success {
+            R10BleDeviceTaskHardwareOutcome::Ok
+        } else {
+            R10BleDeviceTaskHardwareOutcome::Failed
+        };
+
+        self.push_stage_record(5, outcome)
+            .map(|record| {
+                R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(
+                    R10BleDeviceTaskX4ProbeOnlyBridgeStage::RemoteStartWritten,
+                    record,
+                )
+            })
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+                R10BleDeviceTaskX4ProbeOnlyBridgeStage::RemoteStartWritten,
+            ))
+    }
+
+    pub fn on_poll_written(
+        &mut self,
+        success: bool,
+        now_ms: u64,
+    ) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let _ = self.probe.on_write_result(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleWritePhase::Poll,
+            success,
+            now_ms,
+        );
+
+        let outcome = if success {
+            R10BleDeviceTaskHardwareOutcome::Ok
+        } else {
+            R10BleDeviceTaskHardwareOutcome::Failed
+        };
+
+        self.push_stage_record(6, outcome)
+            .map(|record| {
+                R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(
+                    R10BleDeviceTaskX4ProbeOnlyBridgeStage::PollWritten,
+                    record,
+                )
+            })
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+                R10BleDeviceTaskX4ProbeOnlyBridgeStage::PollWritten,
+            ))
+    }
+
+    pub fn on_notify(
+        &mut self,
+        handle: u16,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        let kind =
+            super::r10_ble_probe::classify_notify(&self.probe.runtime.handles, handle, payload);
+        let _ = self.probe.on_notify(handle, payload, now_ms);
+
+        let accepted = !matches!(
+            kind,
+            super::r10_ble_probe::R10BleProbeNotifyKind::BadChecksum
+                | super::r10_ble_probe::R10BleProbeNotifyKind::WrongHandle
+                | super::r10_ble_probe::R10BleProbeNotifyKind::WrongLength
+        );
+
+        let outcome = if accepted {
+            R10BleDeviceTaskHardwareOutcome::Ok
+        } else {
+            R10BleDeviceTaskHardwareOutcome::Ignored
+        };
+
+        let stage = if accepted {
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyReceived
+        } else {
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyIgnored
+        };
+
+        self.push_stage_record(7, outcome)
+            .map(|record| R10BleDeviceTaskX4ProbeOnlyBridgeEvent::with_record(stage, record))
+            .unwrap_or(R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(stage))
+    }
+
+    pub fn on_timeout(&mut self) -> R10BleDeviceTaskX4ProbeOnlyBridgeEvent {
+        R10BleDeviceTaskX4ProbeOnlyBridgeEvent::none(
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::Timeout,
+        )
+    }
+
+    pub fn last_serial_record(&self) -> Option<R10BleDeviceTaskX4RuntimeSerialRecord> {
+        self.transcript
+            .last()
+            .map(|entry| self.trigger.transcript_serial_record(entry))
+    }
+}
+
+impl Default for R10BleDeviceTaskX4ProbeOnlyBleBridge<8> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl R10BleDeviceTaskX4RuntimeSerialRecord {
+    pub fn write_line<W: core::fmt::Write>(&self, out: &mut W) -> core::fmt::Result {
+        write!(out, "rustmix")?;
+
+        let mut index = 0;
+
+        while index < Self::FIELD_COUNT {
+            let field = self.fields[index];
+            write!(out, " {}={}", field.key, field.value)?;
+            index += 1;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub fn r10_ble_x4_print_serial_record(record: R10BleDeviceTaskX4RuntimeSerialRecord) {
+    esp_println::println!(
+        "rustmix event={} kind={} mode={} source={} lifecycle={} command={} outcome={} reader={} status={}",
+        record.value_for_key("event").unwrap_or("none"),
+        record.value_for_key("kind").unwrap_or("none"),
+        record.value_for_key("mode").unwrap_or("none"),
+        record.value_for_key("source").unwrap_or("none"),
+        record.value_for_key("lifecycle").unwrap_or("none"),
+        record.value_for_key("command").unwrap_or("none"),
+        record.value_for_key("outcome").unwrap_or("none"),
+        record.value_for_key("reader").unwrap_or("none"),
+        record.value_for_key("status").unwrap_or("none"),
+    );
+}
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub fn r10_ble_x4_emit_probe_only_bridge_startup_log() {
+    let bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+
+    r10_ble_x4_print_serial_record(bridge.profile_record());
+    r10_ble_x4_print_serial_record(bridge.trigger_record());
+
+    let mut index = 0;
+
+    while index
+        < bridge
+            .trigger
+            .command_plan()
+            .unwrap()
+            .runner
+            .lifecycle_len()
+    {
+        if let Some(record) = bridge.trigger.command_serial_record_at(index) {
+            r10_ble_x4_print_serial_record(record);
+        }
+
+        index += 1;
     }
 }
 
@@ -3205,5 +3656,278 @@ mod tests {
         assert!(safe.is_monitor_safe());
         assert!(!unsafe_value.is_monitor_safe());
         assert!(!unsafe_key.is_monitor_safe());
+    }
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_stage_labels_are_safe() {
+        let stages = [
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::ScanStarted,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::AdvertisementIgnored,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::TargetSeen,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::Connected,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::ConnectFailed,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::GattReady,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::GattIncomplete,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::SubscribeWritten,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::RemoteStartWritten,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::PollWritten,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyReceived,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyIgnored,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::Timeout,
+        ];
+
+        for stage in stages {
+            assert!(r10_ble_device_task_monitor_label_is_safe(stage.as_str()));
+        }
+
+        assert!(R10BleDeviceTaskX4ProbeOnlyBridgeStage::ConnectFailed.is_failure());
+        assert!(R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyReceived.is_notify());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_defaults_to_probe_only_log_only() {
+        let bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+
+        assert!(bridge.is_probe_only());
+        assert!(!bridge.is_reader_input_enabled());
+        assert_eq!(bridge.trigger.mode_label(), "probe_only");
+        assert_eq!(bridge.trigger.reader_label(), "reader_off");
+        assert_eq!(bridge.transcript_len(), 0);
+        assert!(bridge.profile_record().is_monitor_safe());
+        assert!(bridge.trigger_record().is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_start_scan_records_started() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+
+        let event = bridge.start_scan();
+
+        assert_eq!(
+            event.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::ScanStarted
+        );
+        assert!(event.is_monitor_safe());
+        assert_eq!(bridge.transcript_len(), 1);
+        let record = event.record.unwrap();
+        assert_eq!(record.value_for_key("lifecycle"), Some("start_scan"));
+        assert_eq!(record.value_for_key("command"), Some("scan_start"));
+        assert_eq!(record.value_for_key("outcome"), Some("started"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_target_seen_records_match() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+        let _ = bridge.start_scan();
+
+        let event = bridge.on_advertised_device(crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleAdvertisedDevice {
+            address: Some(crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_DEFAULT_TARGET_ADDRESS),
+            name: Some(crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_DEFAULT_ADVERTISED_NAME),
+        });
+
+        assert_eq!(
+            event.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::TargetSeen
+        );
+        assert!(event.is_monitor_safe());
+        assert!(bridge.report().scan_matched);
+
+        let record = event.record.unwrap();
+        assert_eq!(record.value_for_key("lifecycle"), Some("target_seen"));
+        assert_eq!(record.value_for_key("command"), Some("connect_target"));
+        assert_eq!(record.value_for_key("outcome"), Some("ok"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_ignored_advertisement_is_logged_only() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+        let _ = bridge.start_scan();
+
+        let event = bridge.on_advertised_device(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleAdvertisedDevice {
+                address: Some("00:00:00:00:00:00"),
+                name: Some("Other Device"),
+            },
+        );
+
+        assert_eq!(
+            event.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::AdvertisementIgnored
+        );
+        assert!(!bridge.report().scan_matched);
+
+        let record = event.record.unwrap();
+        assert_eq!(record.value_for_key("lifecycle"), Some("target_seen"));
+        assert_eq!(record.value_for_key("command"), Some("connect_target"));
+        assert_eq!(record.value_for_key("outcome"), Some("ignored"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_connect_and_gatt_ready_are_recorded() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+
+        let connected = bridge.on_connected();
+        let gatt = bridge.on_live_gatt_contract_discovered();
+
+        assert_eq!(
+            connected.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::Connected
+        );
+        assert_eq!(
+            gatt.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::GattReady
+        );
+        assert!(bridge.report().connected);
+        assert!(bridge.report().gatt_ready);
+
+        assert_eq!(
+            connected.record.unwrap().value_for_key("lifecycle"),
+            Some("connect")
+        );
+        assert_eq!(
+            gatt.record.unwrap().value_for_key("lifecycle"),
+            Some("discover")
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_write_stages_are_recorded() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+
+        let subscribe = bridge.on_subscribe_written(true, 10_000);
+        let start = bridge.on_remote_start_written(true, 10_001);
+        let poll = bridge.on_poll_written(true, 11_001);
+
+        assert_eq!(
+            subscribe.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::SubscribeWritten
+        );
+        assert_eq!(
+            start.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::RemoteStartWritten
+        );
+        assert_eq!(
+            poll.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::PollWritten
+        );
+        assert!(bridge.report().notify_subscribed);
+        assert!(bridge.report().remote_started);
+        assert_eq!(bridge.report().polls_written, 1);
+
+        assert_eq!(
+            subscribe.record.unwrap().value_for_key("command"),
+            Some("write_remote_start")
+        );
+        assert_eq!(
+            start.record.unwrap().value_for_key("command"),
+            Some("write_poll")
+        );
+        assert_eq!(
+            poll.record.unwrap().value_for_key("command"),
+            Some("write_poll")
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_notify_motion_is_log_only() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+        let _ = bridge.on_live_gatt_contract_discovered();
+
+        let motion = [0x02, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04];
+        let event = bridge.on_notify(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            &motion,
+            12_000,
+        );
+
+        assert_eq!(
+            event.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyReceived
+        );
+        assert_eq!(bridge.report().notifications_total, 1);
+        assert_eq!(bridge.report().motion_count, 1);
+
+        let record = event.record.unwrap();
+        assert_eq!(record.value_for_key("lifecycle"), Some("notify"));
+        assert_eq!(record.value_for_key("command"), Some("handle_notify"));
+        assert_eq!(record.value_for_key("outcome"), Some("ok"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+        assert_eq!(record.status_value(), "ok");
+        assert!(record.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_bad_notify_is_ignored() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<8>::new();
+        let _ = bridge.on_live_gatt_contract_discovered();
+
+        let bad = [0x02, 0x02, 0, 0];
+        let event = bridge.on_notify(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            &bad,
+            12_000,
+        );
+
+        assert_eq!(
+            event.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyIgnored
+        );
+        assert_eq!(bridge.report().wrong_length_count, 1);
+
+        let record = event.record.unwrap();
+        assert_eq!(record.value_for_key("outcome"), Some("ignored"));
+        assert_eq!(record.value_for_key("reader"), Some("reader_off"));
+        assert_eq!(record.status_value(), "ok");
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_full_probe_flow_validates_connectivity() {
+        let mut bridge = R10BleDeviceTaskX4ProbeOnlyBleBridge::<16>::new();
+        let no_event = [0x02, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02];
+
+        let _ = bridge.start_scan();
+        let _ = bridge.on_advertised_device(crate::rustmix_x4::ring_remote::r10_ble_transport::R10BleAdvertisedDevice {
+            address: Some(crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_DEFAULT_TARGET_ADDRESS),
+            name: Some(crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_DEFAULT_ADVERTISED_NAME),
+        });
+        let _ = bridge.on_connected();
+        let _ = bridge.on_live_gatt_contract_discovered();
+        let _ = bridge.on_subscribe_written(true, 10_000);
+        let _ = bridge.on_remote_start_written(true, 10_001);
+        let _ = bridge.on_poll_written(true, 11_001);
+        let notify = bridge.on_notify(
+            crate::rustmix_x4::ring_remote::r10_ble_transport::R10_BLE_LIVE_NOTIFY_VALUE_HANDLE,
+            &no_event,
+            12_000,
+        );
+
+        assert_eq!(
+            notify.stage,
+            R10BleDeviceTaskX4ProbeOnlyBridgeStage::NotifyReceived
+        );
+        assert_eq!(bridge.transcript_len(), 8);
+        assert_eq!(bridge.transcript_dropped(), 0);
+        assert!(bridge.report().connectivity_validated());
+        assert_eq!(bridge.report().no_event_count, 1);
+        assert_eq!(
+            bridge.last_serial_record().unwrap().value_for_key("reader"),
+            Some("reader_off")
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_probe_bridge_serial_record_writes_key_value_line() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let record = trigger.profile_serial_record();
+        let mut line = String::new();
+
+        record.write_line(&mut line).unwrap();
+
+        assert!(line.starts_with("rustmix event=ble_runtime kind=profile"));
+        assert!(line.contains("mode=probe_only"));
+        assert!(line.contains("reader=reader_off"));
+        assert!(line.contains("status=ready"));
     }
 }
