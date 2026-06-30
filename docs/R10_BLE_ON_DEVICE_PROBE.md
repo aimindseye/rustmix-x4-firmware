@@ -422,3 +422,22 @@ The deploy script validates the queue before flashing:
 For ProbeOnly deploy builds, `R10_BLE_X4_OPERATION_QUEUE=1` emits the operation
 queue plan on boot.
 
+
+## ESP32-C3 ProbeOnly runner boundary
+
+`R10BleEsp32c3ProbeRunner` consumes the ProbeOnly operation queue and maps
+operation success/failure into the backend callback API. It also accepts
+advertisement and notify callbacks and routes them into the r4t ProbeOnly bridge.
+
+The runner remains `reader_off`; ReaderRemote navigation is not enabled. The
+future target-only async BLE loop should execute the current operation, then
+report success, failure, advertisement, or notify events into this runner.
+
+The deploy script validates the runner through the broad ESP32-C3 ProbeOnly
+filter:
+
+    cargo test -p target-xteink-x4 r10_ble_esp32c3_probe -- --nocapture
+
+For ProbeOnly deploy builds, `R10_BLE_X4_RUNNER=1` emits runner startup records
+on boot.
+

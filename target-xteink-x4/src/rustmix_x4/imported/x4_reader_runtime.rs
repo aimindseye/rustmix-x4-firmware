@@ -79,6 +79,13 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
             crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_operation_queue_startup_log();
         }
     }
+
+    #[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+    {
+        if option_env!("R10_BLE_X4_RUNNER") == Some("1") {
+            crate::rustmix_x4::ring_remote::r10_ble_x4_emit_esp32c3_probe_runner_startup_log();
+        }
+    }
     let _ = crate::rustmix_x4::contracts::storage_path_helpers::RustmixStoragePathHelpers::active_runtime_adoption_probe();
     let _ = crate::rustmix_x4::contracts::input_semantics::RustmixInputSemantics::active_runtime_adoption_probe();
     let _ = crate::rustmix_x4::input::input_semantics_runtime::RustmixInputSemanticsRuntimeBridge::active_runtime_preflight();
