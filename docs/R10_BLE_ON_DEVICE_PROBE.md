@@ -192,3 +192,25 @@ A second call returns `None` until the task is stopped or reconfigured. This
 keeps BLE startup explicit and prevents accidental repeated scan/connect startup
 loops.
 
+
+## ProbeOnly hardware runner boundary
+
+`R10BleDeviceTaskRunnerPlan` is the hardware-facing boundary for the future BLE
+task. It consumes the one-shot `R10BleDeviceTaskStartRequest` and maps it to a
+monitor-safe lifecycle script:
+
+    start_scan
+    target_seen
+    connect
+    discover
+    subscribe
+    remote_start
+    poll
+    notify
+    timeout
+
+`ProbeOnly` uses this lifecycle without emitting Reader input events.
+`ReaderRemote` uses the same lifecycle but enables Reader event emission after
+valid motion notifications pass the existing policy bridge. `Disabled` still
+produces no runner plan and does not start BLE.
+

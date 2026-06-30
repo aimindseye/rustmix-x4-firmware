@@ -114,6 +114,107 @@ impl R10BleDeviceTaskStartRequest {
         self.config.reader_debounce_ms
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskLifecycleEvent {
+    StartScan,
+    TargetSeen,
+    Connect,
+    Discover,
+    Subscribe,
+    RemoteStart,
+    Poll,
+    Notify,
+    Timeout,
+}
+
+impl R10BleDeviceTaskLifecycleEvent {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::StartScan => "start_scan",
+            Self::TargetSeen => "target_seen",
+            Self::Connect => "connect",
+            Self::Discover => "discover",
+            Self::Subscribe => "subscribe",
+            Self::RemoteStart => "remote_start",
+            Self::Poll => "poll",
+            Self::Notify => "notify",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Notify | Self::Timeout)
+    }
+}
+
+pub const R10_BLE_DEVICE_TASK_PROBE_LIFECYCLE: [R10BleDeviceTaskLifecycleEvent; 9] = [
+    R10BleDeviceTaskLifecycleEvent::StartScan,
+    R10BleDeviceTaskLifecycleEvent::TargetSeen,
+    R10BleDeviceTaskLifecycleEvent::Connect,
+    R10BleDeviceTaskLifecycleEvent::Discover,
+    R10BleDeviceTaskLifecycleEvent::Subscribe,
+    R10BleDeviceTaskLifecycleEvent::RemoteStart,
+    R10BleDeviceTaskLifecycleEvent::Poll,
+    R10BleDeviceTaskLifecycleEvent::Notify,
+    R10BleDeviceTaskLifecycleEvent::Timeout,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskRunnerPlan {
+    pub request: R10BleDeviceTaskStartRequest,
+    pub lifecycle: &'static [R10BleDeviceTaskLifecycleEvent],
+    pub reader_events_enabled: bool,
+}
+
+impl R10BleDeviceTaskRunnerPlan {
+    pub const fn from_start_request(request: R10BleDeviceTaskStartRequest) -> Option<Self> {
+        match request.action {
+            R10BleDeviceTaskAction::StartProbeOnly => Some(Self {
+                request,
+                lifecycle: &R10_BLE_DEVICE_TASK_PROBE_LIFECYCLE,
+                reader_events_enabled: false,
+            }),
+            R10BleDeviceTaskAction::StartReaderRemote => Some(Self {
+                request,
+                lifecycle: &R10_BLE_DEVICE_TASK_PROBE_LIFECYCLE,
+                reader_events_enabled: true,
+            }),
+            R10BleDeviceTaskAction::StayDisabled => None,
+        }
+    }
+
+    pub fn from_state_start(state: &mut R10BleDeviceTaskState) -> Option<Self> {
+        state.start_request().and_then(Self::from_start_request)
+    }
+
+    pub const fn should_run_probe(&self) -> bool {
+        self.request.should_run_probe()
+    }
+
+    pub const fn should_run_reader_remote(&self) -> bool {
+        self.request.should_run_reader_remote()
+    }
+
+    pub const fn should_emit_reader_events(&self) -> bool {
+        self.reader_events_enabled
+    }
+
+    pub const fn lifecycle_len(&self) -> usize {
+        self.lifecycle.len()
+    }
+
+    pub fn lifecycle_contains(&self, event: R10BleDeviceTaskLifecycleEvent) -> bool {
+        self.lifecycle.iter().any(|candidate| *candidate == event)
+    }
+
+    pub fn lifecycle_label_at(&self, index: usize) -> Option<&'static str> {
+        self.lifecycle
+            .get(index)
+            .map(R10BleDeviceTaskLifecycleEvent::as_str)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
@@ -348,5 +449,131 @@ mod tests {
             request.reader_debounce_ms(),
             R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS
         );
+    }
+    #[test]
+    fn r10_ble_device_task_runner_from_disabled_state_is_none() {
+        let mut state = R10BleDeviceTaskState::default();
+
+        assert_eq!(
+            R10BleDeviceTaskRunnerPlan::from_state_start(&mut state),
+            None
+        );
+        assert!(!state.is_started());
+    }
+
+    #[test]
+    fn r10_ble_device_task_probe_runner_uses_probe_lifecycle() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request)
+            .expect("ProbeOnly should produce a runner plan");
+
+        assert!(plan.should_run_probe());
+        assert!(!plan.should_run_reader_remote());
+        assert!(!plan.should_emit_reader_events());
+        assert_eq!(plan.lifecycle_len(), 9);
+        assert_eq!(plan.lifecycle_label_at(0), Some("start_scan"));
+        assert_eq!(plan.lifecycle_label_at(7), Some("notify"));
+        assert_eq!(plan.lifecycle_label_at(8), Some("timeout"));
+    }
+
+    #[test]
+    fn r10_ble_device_task_reader_remote_runner_enables_reader_events() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        };
+
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request)
+            .expect("ReaderRemote should produce a runner plan");
+
+        assert!(!plan.should_run_probe());
+        assert!(plan.should_run_reader_remote());
+        assert!(plan.should_emit_reader_events());
+        assert_eq!(
+            plan.request.reader_debounce_ms(),
+            R10_BLE_RUNTIME_DEFAULT_READER_DEBOUNCE_MS
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_runner_rejects_disabled_request() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StayDisabled,
+            config: R10BleRuntimeConfig::disabled(),
+        };
+
+        assert_eq!(
+            R10BleDeviceTaskRunnerPlan::from_start_request(request),
+            None
+        );
+    }
+
+    #[test]
+    fn r10_ble_device_task_runner_from_state_start_is_one_shot() {
+        let mut state = R10BleDeviceTaskState::new(R10BleRuntimeConfig::probe_only_live_r10());
+
+        let plan = R10BleDeviceTaskRunnerPlan::from_state_start(&mut state)
+            .expect("first ProbeOnly state start should produce runner plan");
+
+        assert_eq!(plan.request.action, R10BleDeviceTaskAction::StartProbeOnly);
+        assert!(state.is_started());
+
+        assert_eq!(
+            R10BleDeviceTaskRunnerPlan::from_state_start(&mut state),
+            None
+        );
+        assert!(state.is_started());
+    }
+
+    #[test]
+    fn r10_ble_device_task_runner_lifecycle_order_matches_probe_script() {
+        let request = R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        };
+        let plan = R10BleDeviceTaskRunnerPlan::from_start_request(request).unwrap();
+
+        let expected = [
+            "start_scan",
+            "target_seen",
+            "connect",
+            "discover",
+            "subscribe",
+            "remote_start",
+            "poll",
+            "notify",
+            "timeout",
+        ];
+
+        for (index, label) in expected.iter().enumerate() {
+            assert_eq!(plan.lifecycle_label_at(index), Some(*label));
+        }
+        assert_eq!(plan.lifecycle_label_at(expected.len()), None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_lifecycle_labels_are_monitor_safe() {
+        for event in R10_BLE_DEVICE_TASK_PROBE_LIFECYCLE {
+            let label = event.as_str();
+
+            assert!(!label.is_empty());
+            assert!(
+                label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+            );
+        }
+    }
+
+    #[test]
+    fn r10_ble_device_task_lifecycle_terminal_flags_are_explicit() {
+        assert!(!R10BleDeviceTaskLifecycleEvent::StartScan.is_terminal());
+        assert!(!R10BleDeviceTaskLifecycleEvent::Poll.is_terminal());
+        assert!(R10BleDeviceTaskLifecycleEvent::Notify.is_terminal());
+        assert!(R10BleDeviceTaskLifecycleEvent::Timeout.is_terminal());
     }
 }
