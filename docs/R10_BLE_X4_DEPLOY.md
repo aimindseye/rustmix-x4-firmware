@@ -31,3 +31,19 @@ R10_BLE_X4_NO_MONITOR=1
 R10_BLE_X4_ELF=/path/to/target-xteink-x4
 ESPFLASH_PORT=/dev/ttyACM0
 ```
+
+
+## Runtime ProbeOnly trigger and serial log formatter
+
+`R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script()` models the X4
+runtime path used by the deploy script. It keeps Reader events disabled and
+formats monitor-safe serial log metadata for profile, trigger, command,
+transcript, and report lines.
+
+The deploy script validates this runtime contract before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_device_task_x4_runtime -- --nocapture
+
+`ReaderRemote` remains explicit opt-in and is represented by
+`reader_remote_manual()` for later hardware validation.
+

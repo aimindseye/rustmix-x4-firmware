@@ -1175,6 +1175,294 @@ impl R10BleDeviceTaskX4DeployProfile {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskX4RuntimeTriggerSource {
+    Boot,
+    DeployScript,
+    Manual,
+}
+
+impl R10BleDeviceTaskX4RuntimeTriggerSource {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Boot => "boot",
+            Self::DeployScript => "deploy_script",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskX4RuntimeStatus {
+    Ready,
+    Skipped,
+    Running,
+    Ok,
+    Retry,
+    Blocked,
+}
+
+impl R10BleDeviceTaskX4RuntimeStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Skipped => "skipped",
+            Self::Running => "running",
+            Self::Ok => "ok",
+            Self::Retry => "retry",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskX4RuntimeLogKind {
+    Profile,
+    Trigger,
+    Command,
+    Transcript,
+    Report,
+}
+
+impl R10BleDeviceTaskX4RuntimeLogKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::Trigger => "trigger",
+            Self::Command => "command",
+            Self::Transcript => "transcript",
+            Self::Report => "report",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4RuntimeSerialLogLine {
+    pub kind: R10BleDeviceTaskX4RuntimeLogKind,
+    pub mode: &'static str,
+    pub source: &'static str,
+    pub lifecycle: &'static str,
+    pub command: &'static str,
+    pub outcome: &'static str,
+    pub reader: &'static str,
+    pub status: R10BleDeviceTaskX4RuntimeStatus,
+}
+
+impl R10BleDeviceTaskX4RuntimeSerialLogLine {
+    pub const fn prefix_label(&self) -> &'static str {
+        "ble_runtime"
+    }
+
+    pub const fn serial_key_label(&self) -> &'static str {
+        "rustmix"
+    }
+
+    pub const fn kind_label(&self) -> &'static str {
+        self.kind.as_str()
+    }
+
+    pub const fn status_label(&self) -> &'static str {
+        self.status.as_str()
+    }
+
+    pub fn is_monitor_safe(&self) -> bool {
+        r10_ble_device_task_monitor_label_is_safe(self.prefix_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.serial_key_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.kind_label())
+            && r10_ble_device_task_monitor_label_is_safe(self.mode)
+            && r10_ble_device_task_monitor_label_is_safe(self.source)
+            && r10_ble_device_task_monitor_label_is_safe(self.lifecycle)
+            && r10_ble_device_task_monitor_label_is_safe(self.command)
+            && r10_ble_device_task_monitor_label_is_safe(self.outcome)
+            && r10_ble_device_task_monitor_label_is_safe(self.reader)
+            && r10_ble_device_task_monitor_label_is_safe(self.status_label())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskX4RuntimeTrigger {
+    pub profile: R10BleDeviceTaskX4DeployProfile,
+    pub source: R10BleDeviceTaskX4RuntimeTriggerSource,
+}
+
+impl R10BleDeviceTaskX4RuntimeTrigger {
+    pub const fn disabled_boot() -> Self {
+        Self {
+            profile: R10BleDeviceTaskX4DeployProfile::disabled(),
+            source: R10BleDeviceTaskX4RuntimeTriggerSource::Boot,
+        }
+    }
+
+    pub const fn probe_only_deploy_script() -> Self {
+        Self {
+            profile: R10BleDeviceTaskX4DeployProfile::probe_only_live_r10(),
+            source: R10BleDeviceTaskX4RuntimeTriggerSource::DeployScript,
+        }
+    }
+
+    pub const fn reader_remote_manual() -> Self {
+        Self {
+            profile: R10BleDeviceTaskX4DeployProfile::reader_remote_live_r10(),
+            source: R10BleDeviceTaskX4RuntimeTriggerSource::Manual,
+        }
+    }
+
+    pub const fn mode_label(&self) -> &'static str {
+        self.profile.mode_label()
+    }
+
+    pub const fn source_label(&self) -> &'static str {
+        self.source.as_str()
+    }
+
+    pub const fn reader_label(&self) -> &'static str {
+        if self.profile.reader_events_enabled() {
+            "reader_on"
+        } else {
+            "reader_off"
+        }
+    }
+
+    pub const fn should_start_runtime(&self) -> bool {
+        self.profile.should_flash()
+    }
+
+    pub const fn is_probe_only(&self) -> bool {
+        matches!(self.profile.mode, R10BleDeviceTaskX4DeployMode::ProbeOnly)
+    }
+
+    pub const fn is_reader_remote(&self) -> bool {
+        matches!(
+            self.profile.mode,
+            R10BleDeviceTaskX4DeployMode::ReaderRemote
+        )
+    }
+
+    pub fn runner_plan(&self) -> Option<R10BleDeviceTaskRunnerPlan> {
+        self.profile.runner_plan()
+    }
+
+    pub fn command_plan(&self) -> Option<R10BleDeviceTaskHardwareCommandPlan> {
+        self.profile.hardware_command_plan()
+    }
+
+    pub fn profile_log_line(&self) -> R10BleDeviceTaskX4RuntimeSerialLogLine {
+        R10BleDeviceTaskX4RuntimeSerialLogLine {
+            kind: R10BleDeviceTaskX4RuntimeLogKind::Profile,
+            mode: self.mode_label(),
+            source: self.source_label(),
+            lifecycle: "none",
+            command: "none",
+            outcome: "none",
+            reader: self.reader_label(),
+            status: if self.should_start_runtime() {
+                R10BleDeviceTaskX4RuntimeStatus::Ready
+            } else {
+                R10BleDeviceTaskX4RuntimeStatus::Skipped
+            },
+        }
+    }
+
+    pub fn trigger_log_line(&self) -> R10BleDeviceTaskX4RuntimeSerialLogLine {
+        R10BleDeviceTaskX4RuntimeSerialLogLine {
+            kind: R10BleDeviceTaskX4RuntimeLogKind::Trigger,
+            mode: self.mode_label(),
+            source: self.source_label(),
+            lifecycle: "none",
+            command: "none",
+            outcome: "none",
+            reader: self.reader_label(),
+            status: if self.should_start_runtime() {
+                R10BleDeviceTaskX4RuntimeStatus::Running
+            } else {
+                R10BleDeviceTaskX4RuntimeStatus::Skipped
+            },
+        }
+    }
+
+    pub fn command_log_line_at(
+        &self,
+        index: usize,
+    ) -> Option<R10BleDeviceTaskX4RuntimeSerialLogLine> {
+        let step = self.command_plan()?.command_at(index)?;
+
+        Some(R10BleDeviceTaskX4RuntimeSerialLogLine {
+            kind: R10BleDeviceTaskX4RuntimeLogKind::Command,
+            mode: self.mode_label(),
+            source: self.source_label(),
+            lifecycle: step.lifecycle_label(),
+            command: step.command_label(),
+            outcome: "pending",
+            reader: step.reader_label(),
+            status: R10BleDeviceTaskX4RuntimeStatus::Ready,
+        })
+    }
+
+    pub fn transcript_log_line(
+        &self,
+        entry: R10BleDeviceTaskHardwareTranscriptEntry,
+    ) -> R10BleDeviceTaskX4RuntimeSerialLogLine {
+        R10BleDeviceTaskX4RuntimeSerialLogLine {
+            kind: R10BleDeviceTaskX4RuntimeLogKind::Transcript,
+            mode: self.mode_label(),
+            source: self.source_label(),
+            lifecycle: entry.lifecycle_label(),
+            command: entry.command_label(),
+            outcome: entry.outcome_label(),
+            reader: entry.reader_label(),
+            status: if entry.should_retry() {
+                R10BleDeviceTaskX4RuntimeStatus::Retry
+            } else if entry.should_emit_reader_event() {
+                R10BleDeviceTaskX4RuntimeStatus::Ok
+            } else if entry.is_terminal() {
+                R10BleDeviceTaskX4RuntimeStatus::Ok
+            } else {
+                R10BleDeviceTaskX4RuntimeStatus::Running
+            },
+        }
+    }
+
+    pub fn report_log_line(
+        &self,
+        report: R10BleDeviceTaskHardwareMockExecutionReport,
+    ) -> R10BleDeviceTaskX4RuntimeSerialLogLine {
+        R10BleDeviceTaskX4RuntimeSerialLogLine {
+            kind: R10BleDeviceTaskX4RuntimeLogKind::Report,
+            mode: self.mode_label(),
+            source: self.source_label(),
+            lifecycle: "none",
+            command: "none",
+            outcome: match report.last_outcome {
+                Some(outcome) => outcome.as_str(),
+                None => "none",
+            },
+            reader: self.reader_label(),
+            status: if report.retry_requested {
+                R10BleDeviceTaskX4RuntimeStatus::Retry
+            } else if report.completed() {
+                R10BleDeviceTaskX4RuntimeStatus::Ok
+            } else if report.attempted == 0 {
+                R10BleDeviceTaskX4RuntimeStatus::Skipped
+            } else {
+                R10BleDeviceTaskX4RuntimeStatus::Blocked
+            },
+        }
+    }
+
+    pub fn execute_probe_only_mock<const N: usize>(
+        &self,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+    ) -> Option<R10BleDeviceTaskHardwareMockExecutionReport> {
+        if !self.is_probe_only() {
+            return None;
+        }
+
+        let runner = self.runner_plan()?;
+
+        Some(R10BleDeviceTaskHardwareMockExecutor::success().execute_runner(&runner, transcript))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
     pub started: bool,
@@ -2415,5 +2703,205 @@ mod tests {
         assert_eq!(report.dropped, 5);
         assert!(!report.completed());
         assert_eq!(transcript.dropped(), 5);
+    }
+    #[test]
+    fn r10_ble_device_task_x4_runtime_labels_are_monitor_safe() {
+        let sources = [
+            R10BleDeviceTaskX4RuntimeTriggerSource::Boot,
+            R10BleDeviceTaskX4RuntimeTriggerSource::DeployScript,
+            R10BleDeviceTaskX4RuntimeTriggerSource::Manual,
+        ];
+        let statuses = [
+            R10BleDeviceTaskX4RuntimeStatus::Ready,
+            R10BleDeviceTaskX4RuntimeStatus::Skipped,
+            R10BleDeviceTaskX4RuntimeStatus::Running,
+            R10BleDeviceTaskX4RuntimeStatus::Ok,
+            R10BleDeviceTaskX4RuntimeStatus::Retry,
+            R10BleDeviceTaskX4RuntimeStatus::Blocked,
+        ];
+        let kinds = [
+            R10BleDeviceTaskX4RuntimeLogKind::Profile,
+            R10BleDeviceTaskX4RuntimeLogKind::Trigger,
+            R10BleDeviceTaskX4RuntimeLogKind::Command,
+            R10BleDeviceTaskX4RuntimeLogKind::Transcript,
+            R10BleDeviceTaskX4RuntimeLogKind::Report,
+        ];
+
+        for source in sources {
+            assert!(r10_ble_device_task_monitor_label_is_safe(source.as_str()));
+        }
+
+        for status in statuses {
+            assert!(r10_ble_device_task_monitor_label_is_safe(status.as_str()));
+        }
+
+        for kind in kinds {
+            assert!(r10_ble_device_task_monitor_label_is_safe(kind.as_str()));
+        }
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_disabled_boot_is_skipped() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::disabled_boot();
+
+        assert_eq!(trigger.mode_label(), "disabled");
+        assert_eq!(trigger.source_label(), "boot");
+        assert!(!trigger.should_start_runtime());
+        assert!(!trigger.is_probe_only());
+        assert_eq!(trigger.runner_plan(), None);
+        assert_eq!(trigger.command_plan(), None);
+
+        let line = trigger.trigger_log_line();
+        assert_eq!(line.kind_label(), "trigger");
+        assert_eq!(line.status_label(), "skipped");
+        assert!(line.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_probe_only_trigger_is_log_only() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let runner = trigger.runner_plan().unwrap();
+
+        assert_eq!(trigger.mode_label(), "probe_only");
+        assert_eq!(trigger.source_label(), "deploy_script");
+        assert!(trigger.should_start_runtime());
+        assert!(trigger.is_probe_only());
+        assert!(!trigger.is_reader_remote());
+        assert_eq!(trigger.reader_label(), "reader_off");
+        assert!(runner.should_run_probe());
+        assert!(!runner.should_emit_reader_events());
+
+        assert!(trigger.profile_log_line().is_monitor_safe());
+        assert!(trigger.trigger_log_line().is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_reader_remote_is_explicit_reader_on() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::reader_remote_manual();
+        let runner = trigger.runner_plan().unwrap();
+
+        assert_eq!(trigger.mode_label(), "reader_remote");
+        assert_eq!(trigger.source_label(), "manual");
+        assert!(trigger.should_start_runtime());
+        assert!(!trigger.is_probe_only());
+        assert!(trigger.is_reader_remote());
+        assert_eq!(trigger.reader_label(), "reader_on");
+        assert!(runner.should_run_reader_remote());
+        assert!(runner.should_emit_reader_events());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_command_log_lines_cover_probe_plan() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+
+        assert_eq!(trigger.command_plan().unwrap().runner.lifecycle_len(), 9);
+
+        let first = trigger.command_log_line_at(0).unwrap();
+        let notify = trigger.command_log_line_at(7).unwrap();
+        let timeout = trigger.command_log_line_at(8);
+
+        assert_eq!(first.kind_label(), "command");
+        assert_eq!(first.lifecycle, "start_scan");
+        assert_eq!(first.command, "scan_start");
+        assert_eq!(first.outcome, "pending");
+        assert_eq!(first.reader, "reader_off");
+        assert_eq!(first.status_label(), "ready");
+        assert!(first.is_monitor_safe());
+
+        assert_eq!(notify.lifecycle, "notify");
+        assert_eq!(notify.command, "handle_notify");
+        assert!(notify.is_monitor_safe());
+
+        assert_eq!(timeout, None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_probe_mock_transcript_formats_as_log_only() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = trigger.execute_probe_only_mock(&mut transcript).unwrap();
+        let notify = transcript.last().unwrap();
+        let line = trigger.transcript_log_line(notify);
+        let report_line = trigger.report_log_line(report);
+
+        assert_eq!(report.reader_events_emitted, 0);
+        assert_eq!(line.kind_label(), "transcript");
+        assert_eq!(line.lifecycle, "notify");
+        assert_eq!(line.command, "handle_notify");
+        assert_eq!(line.outcome, "ok");
+        assert_eq!(line.reader, "reader_off");
+        assert_eq!(line.status_label(), "ok");
+        assert!(line.is_monitor_safe());
+
+        assert_eq!(report_line.kind_label(), "report");
+        assert_eq!(report_line.outcome, "ok");
+        assert_eq!(report_line.status_label(), "ok");
+        assert!(report_line.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_probe_mock_refuses_non_probe_mode() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::reader_remote_manual();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        assert_eq!(trigger.execute_probe_only_mock(&mut transcript), None);
+        assert!(transcript.is_empty());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_reader_transcript_can_format_reader_event() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::reader_remote_manual();
+        let runner = trigger.runner_plan().unwrap();
+
+        let entry = runner
+            .hardware_transcript_entry_at(7, R10BleDeviceTaskHardwareOutcome::Ok)
+            .unwrap();
+        let line = trigger.transcript_log_line(entry);
+
+        assert_eq!(line.lifecycle, "notify");
+        assert_eq!(line.command, "handle_notify");
+        assert_eq!(line.outcome, "ok");
+        assert_eq!(line.reader, "reader_on");
+        assert_eq!(line.status_label(), "ok");
+        assert!(entry.should_emit_reader_event());
+        assert!(line.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_retry_report_formats_retry_status() {
+        let trigger = R10BleDeviceTaskX4RuntimeTrigger::probe_only_deploy_script();
+        let runner = trigger.runner_plan().unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::timeout_notify()
+            .execute_runner(&runner, &mut transcript);
+        let line = trigger.report_log_line(report);
+
+        assert!(report.retry_requested);
+        assert_eq!(line.kind_label(), "report");
+        assert_eq!(line.outcome, "timeout");
+        assert_eq!(line.status_label(), "retry");
+        assert!(line.is_monitor_safe());
+    }
+
+    #[test]
+    fn r10_ble_device_task_x4_runtime_serial_line_placeholders_are_safe() {
+        let line = R10BleDeviceTaskX4RuntimeSerialLogLine {
+            kind: R10BleDeviceTaskX4RuntimeLogKind::Profile,
+            mode: "probe_only",
+            source: "deploy_script",
+            lifecycle: "none",
+            command: "none",
+            outcome: "none",
+            reader: "reader_off",
+            status: R10BleDeviceTaskX4RuntimeStatus::Ready,
+        };
+
+        assert_eq!(line.prefix_label(), "ble_runtime");
+        assert_eq!(line.serial_key_label(), "rustmix");
+        assert_eq!(line.kind_label(), "profile");
+        assert_eq!(line.status_label(), "ready");
+        assert!(line.is_monitor_safe());
     }
 }

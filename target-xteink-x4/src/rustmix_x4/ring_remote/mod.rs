@@ -65,3 +65,9 @@ pub use self::r10_ble_device_task::{
     R10_BLE_X4_DEPLOY_CHIP, R10_BLE_X4_DEPLOY_FEATURE, R10_BLE_X4_DEPLOY_SCRIPT,
     R10BleDeviceTaskX4DeployMode, R10BleDeviceTaskX4DeployProfile,
 };
+
+pub use self::r10_ble_device_task::{
+    R10BleDeviceTaskX4RuntimeLogKind, R10BleDeviceTaskX4RuntimeSerialLogLine,
+    R10BleDeviceTaskX4RuntimeStatus, R10BleDeviceTaskX4RuntimeTrigger,
+    R10BleDeviceTaskX4RuntimeTriggerSource,
+};
