@@ -5,6 +5,7 @@
 //! baseline stays protected while the R10 protocol is validated.
 
 pub mod r10_ble_device_task;
+pub mod r10_ble_esp32c3_backend;
 #[cfg(feature = "r10-ble-host")]
 pub mod r10_ble_host;
 pub mod r10_ble_probe;
@@ -80,3 +81,15 @@ pub use self::r10_ble_device_task::{
     R10BleDeviceTaskX4ProbeOnlyBleBridge, R10BleDeviceTaskX4ProbeOnlyBridgeEvent,
     R10BleDeviceTaskX4ProbeOnlyBridgeStage, r10_ble_x4_emit_probe_only_bridge_startup_log,
 };
+
+pub use r10_ble_esp32c3_backend::{
+    R10_BLE_ESP32C3_PROBE_BACKEND_PLAN, R10BleEsp32c3ProbeBackendEvent,
+    R10BleEsp32c3ProbeBackendOutput, R10BleEsp32c3ProbeBackendState, R10BleEsp32c3ProbeBackendStep,
+    R10BleEsp32c3ProbeBackendTask, r10_ble_esp32c3_probe_backend_plan,
+};
+
+#[cfg(feature = "r10-ble-host")]
+pub use r10_ble_esp32c3_backend::r10_ble_esp32c3_probe_backend_type_boundary;
+
+#[cfg(all(target_arch = "riscv32", feature = "r10-ble-host"))]
+pub use r10_ble_esp32c3_backend::r10_ble_x4_emit_esp32c3_probe_backend_startup_log;

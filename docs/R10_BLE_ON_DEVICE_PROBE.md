@@ -375,3 +375,21 @@ For ProbeOnly deploy builds, `R10_BLE_X4_PROBE_BRIDGE=1` emits the bridge plan
 records on boot so the serial monitor shows the active bridge boundary without
 enabling ReaderRemote.
 
+
+## ESP32-C3 ProbeOnly backend task
+
+`R10BleEsp32c3ProbeBackendTask` is the ESP32-C3 ProbeOnly backend controller.
+It is callback-fed by the BLE host loop and routes scan, advertisement, connect,
+GATT discovery, write result, and notify events into the r4t ProbeOnly bridge.
+
+The backend task remains `reader_off`; it does not inject Reader navigation.
+ReaderRemote stays compile-present and explicitly blocked from runtime navigation.
+
+The deploy script validates the backend task before flashing:
+
+    cargo test -p target-xteink-x4 r10_ble_esp32c3_probe_backend -- --nocapture
+
+For ProbeOnly deploy builds, `R10_BLE_X4_BACKEND_TASK=1` emits backend startup
+and plan records on boot. This makes the ESP32-C3 backend boundary visible in
+the serial monitor without enabling ReaderRemote.
+
