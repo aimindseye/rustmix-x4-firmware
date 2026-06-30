@@ -274,3 +274,24 @@ only when the command is `handle_notify` and the outcome is `ok`. `ProbeOnly`
 records the same notify command as log-only. Failed and timeout outcomes are
 marked retry-worthy for the future adapter loop.
 
+
+## Hardware adapter mock executor
+
+`R10BleDeviceTaskHardwareMockExecutor` consumes the hardware command plan and
+records execution outcomes into `R10BleDeviceTaskHardwareTranscript`.
+
+Mock scripts:
+
+    success
+    timeout_notify
+    failed_write
+    ignored_notify
+
+The executor is intentionally hardware-neutral. It does not call `esp-radio` or
+`trouble-host`; it only exercises the command/transcript contract that the
+future on-device adapter will implement.
+
+Reader input emission remains guarded. `ProbeOnly` records notify outcomes as
+log-only. `ReaderRemote` records a Reader-capable notify path, but the mock
+report counts a Reader event only when `handle_notify` completes with `ok`.
+

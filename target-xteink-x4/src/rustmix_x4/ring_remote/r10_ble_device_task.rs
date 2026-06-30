@@ -857,6 +857,173 @@ impl R10BleDeviceTaskRunnerPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum R10BleDeviceTaskHardwareMockOutcomeScript {
+    Success,
+    TimeoutNotify,
+    FailedWrite,
+    IgnoredNotify,
+}
+
+impl R10BleDeviceTaskHardwareMockOutcomeScript {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::TimeoutNotify => "timeout_notify",
+            Self::FailedWrite => "failed_write",
+            Self::IgnoredNotify => "ignored_notify",
+        }
+    }
+
+    pub fn outcome_for_step(
+        &self,
+        step: &R10BleDeviceTaskHardwareCommandStep,
+    ) -> R10BleDeviceTaskHardwareOutcome {
+        match self {
+            Self::Success => R10BleDeviceTaskHardwareOutcome::Ok,
+            Self::TimeoutNotify => {
+                if step.command.is_notify_handler() {
+                    R10BleDeviceTaskHardwareOutcome::Timeout
+                } else {
+                    R10BleDeviceTaskHardwareOutcome::Ok
+                }
+            }
+            Self::FailedWrite => {
+                if step.command.is_write() {
+                    R10BleDeviceTaskHardwareOutcome::Failed
+                } else if step.command.is_notify_handler() {
+                    R10BleDeviceTaskHardwareOutcome::Ignored
+                } else {
+                    R10BleDeviceTaskHardwareOutcome::Ok
+                }
+            }
+            Self::IgnoredNotify => {
+                if step.command.is_notify_handler() {
+                    R10BleDeviceTaskHardwareOutcome::Ignored
+                } else {
+                    R10BleDeviceTaskHardwareOutcome::Ok
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskHardwareMockExecutionReport {
+    pub attempted: usize,
+    pub recorded: usize,
+    pub dropped: usize,
+    pub reader_events_emitted: usize,
+    pub retry_requested: bool,
+    pub last_outcome: Option<R10BleDeviceTaskHardwareOutcome>,
+}
+
+impl R10BleDeviceTaskHardwareMockExecutionReport {
+    pub const fn empty() -> Self {
+        Self {
+            attempted: 0,
+            recorded: 0,
+            dropped: 0,
+            reader_events_emitted: 0,
+            retry_requested: false,
+            last_outcome: None,
+        }
+    }
+
+    pub const fn completed(&self) -> bool {
+        self.attempted > 0 && self.attempted == self.recorded && self.dropped == 0
+    }
+
+    pub const fn emitted_reader_events(&self) -> bool {
+        self.reader_events_emitted > 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct R10BleDeviceTaskHardwareMockExecutor {
+    pub script: R10BleDeviceTaskHardwareMockOutcomeScript,
+}
+
+impl R10BleDeviceTaskHardwareMockExecutor {
+    pub const fn new(script: R10BleDeviceTaskHardwareMockOutcomeScript) -> Self {
+        Self { script }
+    }
+
+    pub const fn success() -> Self {
+        Self::new(R10BleDeviceTaskHardwareMockOutcomeScript::Success)
+    }
+
+    pub const fn timeout_notify() -> Self {
+        Self::new(R10BleDeviceTaskHardwareMockOutcomeScript::TimeoutNotify)
+    }
+
+    pub const fn failed_write() -> Self {
+        Self::new(R10BleDeviceTaskHardwareMockOutcomeScript::FailedWrite)
+    }
+
+    pub const fn ignored_notify() -> Self {
+        Self::new(R10BleDeviceTaskHardwareMockOutcomeScript::IgnoredNotify)
+    }
+
+    pub fn execute_plan<const N: usize>(
+        &self,
+        plan: &R10BleDeviceTaskHardwareCommandPlan,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+    ) -> R10BleDeviceTaskHardwareMockExecutionReport {
+        let mut report = R10BleDeviceTaskHardwareMockExecutionReport::empty();
+        let mut index = 0;
+
+        while index < plan.runner.lifecycle.len() {
+            if let Some(step) = plan.command_at(index) {
+                let outcome = self.script.outcome_for_step(&step);
+                let entry = R10BleDeviceTaskHardwareTranscriptEntry {
+                    step,
+                    outcome,
+                    sequence: index as u8,
+                };
+
+                report.attempted += 1;
+                report.last_outcome = Some(outcome);
+
+                if entry.should_emit_reader_event() {
+                    report.reader_events_emitted += 1;
+                }
+
+                if entry.should_retry() {
+                    report.retry_requested = true;
+                }
+
+                if transcript.push(entry) {
+                    report.recorded += 1;
+                }
+            }
+
+            index += 1;
+        }
+
+        report.dropped = transcript.dropped();
+        report
+    }
+
+    pub fn execute_runner<const N: usize>(
+        &self,
+        runner: &R10BleDeviceTaskRunnerPlan,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+    ) -> R10BleDeviceTaskHardwareMockExecutionReport {
+        let plan = R10BleDeviceTaskHardwareCommandPlan::from_runner_plan(*runner);
+        self.execute_plan(&plan, transcript)
+    }
+
+    pub fn execute_state_start<const N: usize>(
+        &self,
+        state: &mut R10BleDeviceTaskState,
+        transcript: &mut R10BleDeviceTaskHardwareTranscript<N>,
+    ) -> Option<R10BleDeviceTaskHardwareMockExecutionReport> {
+        R10BleDeviceTaskHardwareCommandPlan::from_state_start(state)
+            .map(|plan| self.execute_plan(&plan, transcript))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct R10BleDeviceTaskState {
     pub plan: R10BleDeviceTaskPlan,
     pub started: bool,
@@ -1738,5 +1905,224 @@ mod tests {
 
         transcript.clear();
         assert!(transcript.is_empty());
+    }
+    #[test]
+    fn r10_ble_device_task_hardware_mock_script_labels_are_stable_and_safe() {
+        let scripts = [
+            R10BleDeviceTaskHardwareMockOutcomeScript::Success,
+            R10BleDeviceTaskHardwareMockOutcomeScript::TimeoutNotify,
+            R10BleDeviceTaskHardwareMockOutcomeScript::FailedWrite,
+            R10BleDeviceTaskHardwareMockOutcomeScript::IgnoredNotify,
+        ];
+
+        let labels = scripts.map(|script| script.as_str());
+
+        assert_eq!(
+            labels,
+            [
+                "success",
+                "timeout_notify",
+                "failed_write",
+                "ignored_notify"
+            ]
+        );
+
+        for label in labels {
+            assert!(r10_ble_device_task_monitor_label_is_safe(label));
+        }
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_probe_success_is_log_only() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::success()
+            .execute_runner(&runner, &mut transcript);
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.dropped, 0);
+        assert_eq!(report.reader_events_emitted, 0);
+        assert_eq!(
+            report.last_outcome,
+            Some(R10BleDeviceTaskHardwareOutcome::Ok)
+        );
+        assert!(report.completed());
+        assert!(!report.emitted_reader_events());
+
+        let notify = transcript.last().unwrap();
+        assert_eq!(notify.command_label(), "handle_notify");
+        assert_eq!(notify.outcome_label(), "ok");
+        assert!(notify.is_probe_log_only());
+        assert!(!notify.should_emit_reader_event());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_reader_remote_success_emits_one_reader_event() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::success()
+            .execute_runner(&runner, &mut transcript);
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.reader_events_emitted, 1);
+        assert_eq!(
+            report.last_outcome,
+            Some(R10BleDeviceTaskHardwareOutcome::Ok)
+        );
+        assert!(report.completed());
+        assert!(report.emitted_reader_events());
+
+        let notify = transcript.last().unwrap();
+        assert_eq!(notify.command_label(), "handle_notify");
+        assert_eq!(notify.reader_label(), "reader_on");
+        assert!(notify.should_emit_reader_event());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_timeout_notify_requests_retry() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::timeout_notify()
+            .execute_runner(&runner, &mut transcript);
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.reader_events_emitted, 0);
+        assert_eq!(
+            report.last_outcome,
+            Some(R10BleDeviceTaskHardwareOutcome::Timeout)
+        );
+        assert!(report.retry_requested);
+        assert!(!report.emitted_reader_events());
+
+        let notify = transcript.last().unwrap();
+        assert_eq!(notify.command_label(), "handle_notify");
+        assert_eq!(notify.outcome_label(), "timeout");
+        assert!(notify.should_retry());
+        assert!(!notify.should_emit_reader_event());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_failed_write_marks_writes_failed() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::failed_write()
+            .execute_runner(&runner, &mut transcript);
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.reader_events_emitted, 0);
+        assert_eq!(
+            report.last_outcome,
+            Some(R10BleDeviceTaskHardwareOutcome::Ignored)
+        );
+        assert!(report.retry_requested);
+
+        assert_eq!(
+            transcript.entry_at(3).unwrap().command_label(),
+            "subscribe_cccd"
+        );
+        assert_eq!(transcript.entry_at(3).unwrap().outcome_label(), "failed");
+        assert_eq!(
+            transcript.entry_at(4).unwrap().command_label(),
+            "write_remote_start"
+        );
+        assert_eq!(transcript.entry_at(4).unwrap().outcome_label(), "failed");
+        assert_eq!(transcript.last().unwrap().command_label(), "handle_notify");
+        assert_eq!(transcript.last().unwrap().outcome_label(), "ignored");
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_ignored_notify_suppresses_reader_event() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartReaderRemote,
+            config: R10BleRuntimeConfig::reader_remote_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::ignored_notify()
+            .execute_runner(&runner, &mut transcript);
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 8);
+        assert_eq!(report.reader_events_emitted, 0);
+        assert_eq!(
+            report.last_outcome,
+            Some(R10BleDeviceTaskHardwareOutcome::Ignored)
+        );
+        assert!(!report.retry_requested);
+        assert!(!report.emitted_reader_events());
+
+        let notify = transcript.last().unwrap();
+        assert_eq!(notify.command_label(), "handle_notify");
+        assert_eq!(notify.outcome_label(), "ignored");
+        assert!(!notify.should_emit_reader_event());
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_transcript_overflow_is_reported() {
+        let runner = R10BleDeviceTaskRunnerPlan::from_start_request(R10BleDeviceTaskStartRequest {
+            action: R10BleDeviceTaskAction::StartProbeOnly,
+            config: R10BleRuntimeConfig::probe_only_live_r10(),
+        })
+        .unwrap();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<3>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::success()
+            .execute_runner(&runner, &mut transcript);
+
+        assert_eq!(report.attempted, 8);
+        assert_eq!(report.recorded, 3);
+        assert_eq!(report.dropped, 5);
+        assert!(!report.completed());
+        assert_eq!(transcript.len(), 3);
+        assert_eq!(transcript.dropped(), 5);
+        assert_eq!(
+            transcript.entry_at(0).unwrap().command_label(),
+            "scan_start"
+        );
+        assert_eq!(
+            transcript.entry_at(2).unwrap().command_label(),
+            "discover_gatt"
+        );
+        assert_eq!(transcript.entry_at(3), None);
+    }
+
+    #[test]
+    fn r10_ble_device_task_hardware_mock_disabled_state_emits_nothing() {
+        let mut state = R10BleDeviceTaskState::default();
+        let mut transcript = R10BleDeviceTaskHardwareTranscript::<8>::new();
+
+        let report = R10BleDeviceTaskHardwareMockExecutor::success()
+            .execute_state_start(&mut state, &mut transcript);
+
+        assert_eq!(report, None);
+        assert_eq!(transcript.len(), 0);
+        assert_eq!(transcript.dropped(), 0);
+        assert!(transcript.is_empty());
+        assert!(!state.is_started());
     }
 }
