@@ -232,3 +232,24 @@ Each lifecycle event exposes compact monitor-safe labels:
 the same lifecycle with `reader_on`. `Disabled` still produces no runner plan and
 therefore no monitor events.
 
+
+## ProbeOnly hardware adapter command plan
+
+`R10BleDeviceTaskHardwareCommandPlan` maps the hardware-neutral lifecycle plan
+to the BLE operations the real adapter must perform:
+
+    start_scan    -> scan_start
+    target_seen   -> connect_target
+    connect       -> discover_gatt
+    discover      -> subscribe_cccd
+    subscribe     -> write_remote_start
+    remote_start  -> write_poll
+    poll          -> write_poll
+    notify        -> handle_notify
+    timeout       -> no command
+
+`ProbeOnly` remains log-only: notify handling is recorded but does not emit
+Reader input. `ReaderRemote` uses the same command sequence, but the notify
+handler is marked Reader-event capable so the next hardware adapter step can
+route accepted motion notifications through the existing policy bridge.
+
